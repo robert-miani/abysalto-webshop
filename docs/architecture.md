@@ -283,7 +283,7 @@ and left out of this diagram for readability.
 | Azure Front Door + WAF | Global entry point. TLS termination, CDN caching, web application firewall, DDoS protection, routing to the home or nearest stamp. | Platform (shared) |
 | Web BFF | API for the web shop. Aggregates data from several services into one response per page. Runs the login flow and keeps tokens server-side; the browser only gets an HTTP-only session cookie. | Team A |
 | Mobile BFF | API for the mobile apps. Payloads shaped for mobile screens, API versioning that supports old app versions in the stores. | Team A |
-| Azure API Management | Public partner API for B2B partners and marketplaces. Partner onboarding, subscription keys, OAuth2 client credentials, quotas, rate limits, developer portal. | Team B |
+| Azure API Management | Public partner API for B2B partners and marketplaces. Partner onboarding, subscription keys, OAuth2 client credentials, quotas, rate limits, developer portal. One instance per stamp; Front Door routes each partner to its home stamp. | Team B |
 | Back-office BFF | API for the back-office portal used by client staff: merchandising, order management, refunds, customer service. Staff log in with the client's Entra ID workforce tenant. Each team owns its own portal modules. | Team B hosts; both teams contribute |
 
 ### 4.2 Domain services
@@ -425,6 +425,9 @@ sequenceDiagram
     Order--)C: Order confirmed (SignalR push)
 ```
 
+After the order is confirmed, the Payment service captures the authorized amount and publishes
+`PaymentCaptured`. Fiscalization of the receipt starts from this event (see [section 10.3](#103-fiscalization-of-receipts-croatia)).
+
 Failure and compensation paths:
 
 | Failure | Saga action |
@@ -443,7 +446,7 @@ Failure and compensation paths:
 | Compute | Azure Kubernetes Service (AKS) Automatic | Managed node pools, upgrades, and autoscaling; standard Kubernetes skills and tooling; room to grow past two teams |
 | Container registry | Azure Container Registry, geo-replicated to every stamp region | Images are pulled from the local region |
 | Global entry, CDN, WAF | Azure Front Door Premium | One global anycast entry with CDN caching, WAF, bot protection, and DDoS protection |
-| Partner API gateway | Azure API Management | Partner onboarding, keys, OAuth2, quotas, developer portal without custom code |
+| Partner API gateway | Azure API Management Premium v2, one instance per stamp | Partner onboarding, keys, OAuth2, quotas, developer portal without custom code. Premium v2 does not offer multi-region deployment, and a separate instance per stamp matches the stamp model anyway |
 | Business messaging | Azure Service Bus Premium | Topics, sessions, duplicate detection, dead-letter queues, private endpoints |
 | Streaming | Azure Event Hubs (Kafka protocol) | High-throughput, replayable streams; Kafka clients work without changes |
 | Relational data | Azure Database for PostgreSQL Flexible Server, one database per service | Zone-redundant HA, read replicas, geo-replicas for DR, mature EF Core provider |
@@ -626,11 +629,221 @@ sessions. When the app is closed, Notifications sends a mobile push notification
 
 ## 9. Security and authentication
 
-_To be written._
+### 9.1 Authentication per channel
+
+| Actor | Identity provider | Flow | Token handling |
+| --- | --- | --- | --- |
+| Web shop customer | Microsoft Entra External ID | OpenID Connect authorization code flow with PKCE, run by the Web BFF as a confidential client | The Web BFF keeps the tokens in an encrypted server-side session. The browser only gets an `HttpOnly`, `Secure`, `SameSite=Strict` session cookie, so JavaScript never sees a token. |
+| Mobile app customer | Microsoft Entra External ID | Authorization code flow with PKCE through the system browser | Short-lived access token; refresh token with rotation, stored in the iOS Keychain or Android Keystore. App attestation (App Attest, Play Integrity) limits abuse from fake clients. |
+| B2B partner system | Microsoft Entra ID (app registration per partner) | OAuth2 client credentials, plus a client certificate (mTLS) checked by API Management | API Management validates the token, the certificate, and the subscription key, then applies the partner's quota. Tokens carry the partner ID and its scopes. |
+| B2B buyer (a person at a partner company) | Microsoft Entra External ID | Same as the web shop customer | The Customer service links the person to a company account and a role (buyer, approver, administrator). |
+| Marketplace | The marketplace's own identity | The platform calls the marketplace API with the credentials the marketplace issues. Inbound webhooks are verified by signature. | Marketplace credentials are stored in Key Vault and rotated. |
+| Client staff | Microsoft Entra ID (client's workforce tenant) | OpenID Connect through the Back-office BFF | MFA and conditional access are required. Administrative roles are granted just in time. |
+| Service to Azure resource | Microsoft Entra Workload ID | Federated identity for the Kubernetes service account | Services connect to PostgreSQL, Service Bus, Key Vault, and Storage with Entra tokens. There are no connection string passwords. |
+| Service to service | Microsoft Entra ID | The BFF forwards the user's access token; background workers use their workload identity | Every service validates the token (issuer, audience, expiry) itself. It does not trust the network. |
+
+Customer MFA is risk-based: it is required for sensitive actions (change of email or password, new payment
+method, large B2B orders) and when Entra External ID detects a risky sign-in.
+
+### 9.2 Authorization
+
+- **Ownership in every service.** A service checks that the caller owns the resource: a customer can only
+  read or change their own cart, orders, and profile. The check is in the domain service, not only in the BFF.
+  This is the main control against broken object-level authorization, the most common API vulnerability.
+- **Scopes for partners.** Each partner gets only the scopes it needs (for example `orders.write`, `stock.read`).
+- **Roles for staff.** Entra ID groups map to application roles (merchandiser, customer service, finance, administrator).
+
+### 9.3 Payment security (PCI DSS)
+
+- Customers enter card data only on the **PSP's hosted payment page**, reached by a **full redirect**. The
+  platform never receives, processes, or stores card numbers. It stores only PSP tokens and references.
+- This keeps the merchant in the smallest PCI DSS v4.0.1 scope (**SAQ A**). A full redirect is chosen over
+  an embedded iframe, because the SAQ A script-attack eligibility rule applies to iframe pages.
+- Strong customer authentication (PSD2, 3-D Secure) is run by the PSP.
+- PSP webhooks are verified by signature and processed idempotently. The Payment service confirms the
+  payment status with the PSP API before it changes an order.
+- A daily reconciliation compares the Payment service records with the PSP settlement report.
+
+### 9.4 Data protection and GDPR
+
+| Control | Implementation |
+| --- | --- |
+| Encryption in transit | TLS 1.2 or higher on every connection, TLS 1.3 where supported. HTTP is redirected to HTTPS at Front Door. |
+| Encryption at rest | All Azure data stores encrypt at rest. Databases with personal data use customer-managed keys in Key Vault. |
+| Network isolation | All PaaS services use private endpoints and have public access turned off. Kubernetes network policies deny all traffic between pods by default and allow only the declared paths. Outbound traffic goes through Azure Firewall with an allow-list of partner domains (PSP, CIS, marketplaces, carriers). |
+| Secrets | Azure Key Vault only. Services read secrets through workload identity. Secrets and certificates are rotated, and expiry raises an alert. |
+| Data residency | Personal data is stored only in the customer's home stamp (see [section 3.2](#32-global-topology)). |
+| Data minimisation | Services store only the personal data they need. Events carry customer IDs, not names or addresses, unless the consumer needs them. |
+| Consent | The Customer service records consents with time and version. Notifications checks marketing consent before sending. |
+| Right of access and erasure | The Customer service runs the request. It publishes `CustomerErasureRequested`; each service deletes or anonymises its data and reports completion. Orders and invoices are kept for the legal retention period, with personal data minimised. |
+| Logs | No personal data or secrets in logs. Audit logs of staff actions are write-once and kept for the agreed period. |
+
+### 9.5 Application and platform protection
+
+| Threat (OWASP API Security Top 10 and platform) | Control |
+| --- | --- |
+| Broken object-level authorization | Ownership checks in every service (section 9.2); integration tests for access to another user's resources |
+| Broken authentication | Managed identity providers, short-lived tokens, no custom password handling |
+| Unrestricted resource consumption | Rate limits at Front Door, API Management, and service level; maximum page sizes; request size limits |
+| Server-side request forgery | Services do not fetch URLs supplied by users; outbound allow-list at Azure Firewall |
+| Security misconfiguration | Infrastructure as code with review; Azure Policy and AKS deployment safeguards; no public endpoints on data stores |
+| Improper inventory of APIs | Every API is published with OpenAPI; partner APIs exist only in API Management; old versions have a retirement date |
+| Injection and common web attacks | Parameterised queries (EF Core), input validation on every endpoint, Front Door WAF with managed rule sets |
+| Bots, credential stuffing, scalping | Front Door bot protection, Entra External ID sign-in protection, rate limits on login and checkout |
+| Compromised dependency or image | Dependency scanning, signed images with SBOM, only images from our registry can run (Azure Policy), Microsoft Defender for Containers |
+
+Security is tested continuously in CI (static analysis, dependency and secret scanning) and by an external
+penetration test before each go-live and at least once a year.
 
 ## 10. Integration with external services
 
-_To be written._
+### 10.1 Integration Hub
+
+All integrations with external systems go through the **Integration Hub**, which is an anti-corruption layer
+between the platform and the outside world. Domain services publish business events in the platform's own
+language (`OrderConfirmed`, `PaymentCaptured`, `StockChanged`). A connector in the Integration Hub translates
+the event into the partner's protocol and data model, and translates the partner's replies back into
+platform events. No domain service knows a partner's API.
+
+Each connector runs as its own worker deployment, with its own queue subscription, credentials, rate limits,
+and circuit breaker. A slow or failing marketplace cannot delay fiscal receipts.
+
+```mermaid
+flowchart LR
+    subgraph platform["Platform services"]
+        order["Order"]
+        pay["Payment"]
+        inv["Inventory"]
+        cat["Catalog"]
+    end
+    sb[["Service Bus topics"]]
+    subgraph hub["Integration Hub"]
+        fisc["Fiscalization connector (HR)"]
+        einv["E-invoice connector"]
+        erp["ERP/PIM connector"]
+        mkt["Marketplace connectors"]
+        ship["Carrier connectors"]
+    end
+    order --> sb
+    pay --> sb
+    inv --> sb
+    cat --> sb
+    sb --> fisc --> cis["Tax Administration CIS"]
+    sb --> einv --> posr["Information intermediary"]
+    sb <--> erp <--> erpsys["Client ERP/PIM"]
+    sb <--> mkt <--> mktsys["Marketplaces"]
+    sb <--> ship <--> carriers["Shipping carriers"]
+```
+
+The PSP is the one exception: the Payment service integrates with it directly, because payment is part of the
+checkout saga and has its own PCI DSS boundary. The Payment service applies the same rules (adapter behind an
+interface, idempotency, reconciliation).
+
+### 10.2 Integrations overview
+
+| External system | Direction | Protocol | Trigger | Failure handling |
+| --- | --- | --- | --- | --- |
+| Tax Administration fiscalization service (CIS), B2C receipts | Out | SOAP 1.1 over HTTPS, XML signature | `PaymentCaptured` for a B2C order | Retry with backoff; receipt stays valid with its ZKI; deferred delivery (section 10.3) |
+| Information intermediary, B2B e-invoices | Out and in | Intermediary's REST API; e-invoice in UBL 2.1 (EN 16931, HR CIUS) | B2B invoice issued; payment received | Retry; status events for delivered or rejected invoices |
+| PSP | Out and in | REST, signed webhooks | Checkout saga | Idempotent calls, webhook verification, daily reconciliation |
+| ERP/PIM | In and out | Events or batch files, depending on the ERP | Product, price, and stock changes in; orders, invoices, and returns out | Replayable imports, idempotency per record, reconciliation |
+| Marketplaces | In and out | Each marketplace's API | Stock and price changes out; orders in; shipment status out | Per-marketplace rate limits, change coalescing, reconciliation |
+| Shipping carriers | Out and in | Carrier APIs, tracking webhooks | Order ready to ship; tracking updates | Retry; fallback carrier |
+| Email, SMS, and push providers | Out | Provider APIs | Notifications events | Retry; fallback provider for critical messages |
+
+### 10.3 Fiscalization of receipts (Croatia)
+
+**Legal context.** Under the Fiscalization Act (Zakon o fiskalizaciji, NN 89/2025), from 1 January 2026 every
+B2C receipt must be fiscalized, whatever the payment method: cash, cards, bank transfers, and other methods.
+Web shop card payments through a payment gateway are in scope. The details in this section must be confirmed
+by the client's tax advisor before implementation.
+
+**How it works.** Fiscalization is asynchronous and never blocks checkout:
+
+1. The Order service publishes `PaymentCaptured` through its outbox. The event holds the order number,
+   amounts, VAT breakdown, and payment method.
+2. The fiscalization connector assigns the next receipt number. The number is gap-free and sequential per
+   business premises mark and device mark. To avoid one global bottleneck, each worker partition uses its
+   own device mark.
+3. The connector computes the issuer's protective code (**ZKI**): it signs the receipt fields with the FINA
+   application certificate and hashes the signature. The receipt is already legally issued with the ZKI.
+4. The connector sends the signed XML request to CIS. CIS returns the unique receipt identifier (**JIR**).
+5. The connector stores the request, the response, and the JIR, and publishes `ReceiptFiscalized`.
+   Notifications sends the receipt with the JIR and the QR code to the customer.
+
+**When CIS is not available.** The receipt is issued with the ZKI only. The connector retries with backoff, and
+later messages are marked as subsequent delivery. The law requires delivery of all such receipts **within two
+working days** of the outage. An alert fires long before that deadline (see [section 11.4](#114-alerting)).
+
+**Certificate and keys.** The FINA application certificate is stored in Key Vault with an HSM-backed,
+non-exportable key. The connector calls the Key Vault sign operation, so the private key never leaves the
+vault. An alert fires 30 days before the certificate expires.
+
+**Algorithm change.** The Tax Administration is moving CIS from RSA-SHA1 to RSA-SHA256. RSA-SHA1 and TLS 1.1
+are switched off in production on 1 January 2027. The connector reads the signature algorithm from
+configuration, so the change needs no code release.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Order
+    participant SB as Service Bus
+    participant F as Fiscalization connector
+    participant KV as Key Vault (HSM)
+    participant CIS as Tax Administration CIS
+    participant N as Notifications
+
+    Order--)SB: PaymentCaptured (outbox)
+    SB--)F: PaymentCaptured
+    F->>F: Assign receipt number (per premises and device)
+    F->>KV: Sign receipt fields
+    KV-->>F: Signature, used to compute the ZKI
+    F->>CIS: Fiscalization request (signed XML)
+    alt CIS responds
+        CIS-->>F: JIR
+        F--)SB: ReceiptFiscalized (ZKI, JIR)
+    else CIS unavailable or timeout
+        F--)SB: ReceiptIssuedWithoutJir (ZKI)
+        F->>F: Retry with backoff, subsequent delivery within 2 working days
+    end
+    SB--)N: Send receipt to customer
+```
+
+**Other countries.** The platform sells globally, so tax compliance is a plug-in per country. Each country gets
+its own connector behind the same internal events (`PaymentCaptured`, `InvoiceIssued`). Croatia is the first.
+
+### 10.4 B2B e-invoicing (Fiscalization 2.0)
+
+From 1 January 2026, VAT-registered businesses in Croatia must issue and receive e-invoices (eRačun) for B2B
+transactions. The platform does this through a **certified information intermediary**, not through its own
+access point:
+
+1. The Order service publishes `InvoiceIssued` for a B2B order.
+2. The e-invoice connector builds the invoice in UBL 2.1 according to EN 16931 and the Croatian CIUS, including
+   the required national extensions (for example the product classification per line).
+3. The intermediary delivers the invoice to the buyer's intermediary, fiscalizes it, and returns status updates
+   (delivered, rejected). The connector turns them into platform events.
+4. When the B2B payment arrives, the connector reports it to the Tax Administration through the intermediary
+   (eIzvještavanje), within the legal deadline.
+
+Using an intermediary keeps the platform out of the certification and network operation of an e-invoice
+access point. The cost is a per-document fee and a dependency on the intermediary, which the connector
+isolates behind the same internal events.
+
+### 10.5 Rules for every connector
+
+- **Timeouts and retries.** Every call has a timeout. Retries use exponential backoff with jitter, and only for
+  idempotent operations or operations with an idempotency key.
+- **Circuit breaker.** After repeated failures, the connector stops calling the partner for a short time and
+  keeps the messages in its queue.
+- **Dead letters and replay.** A message that keeps failing goes to the dead-letter queue and raises an alert.
+  An operator replays it after the cause is fixed.
+- **Audit log.** The connector stores every request and response with the correlation ID for the period the
+  law or the contract requires.
+- **Reconciliation.** A scheduled job compares the platform's records with the partner's records (receipts,
+  payments, marketplace orders) and reports differences.
+- **Test environments.** Every connector runs against the partner's test environment in `staging`, and against
+  recorded responses in CI.
 
 ## 11. Monitoring and alerting
 
