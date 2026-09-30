@@ -621,11 +621,182 @@ _To be written._
 
 ## 11. Monitoring and alerting
 
-_To be written._
+### 11.1 Telemetry
+
+Every service is instrumented with the OpenTelemetry SDK for .NET and emits three signals:
+
+| Signal | Content |
+| --- | --- |
+| Traces | One trace per user request, across BFFs, services, and Service Bus messages. The W3C trace context travels in HTTP headers and in message application properties, so one trace ID follows a checkout from the click to the fiscal receipt. |
+| Metrics | Request rate, error rate, and duration per endpoint and per consumer (the RED method). Runtime metrics (CPU, memory, GC, thread pool). Business metrics (carts created, checkouts started, orders confirmed, payment success rate, receipts fiscalized). |
+| Logs | Structured JSON logs with the trace ID and span ID. No personal data or secrets in logs; a log filter removes known sensitive fields. |
+
+Services send OTLP data to an OpenTelemetry Collector in each cluster. The collector exports traces and
+logs to Application Insights and Log Analytics, and metrics to Azure Monitor managed Prometheus. The
+exporter endpoint is configuration, so a change of back end needs no code change.
+
+### 11.2 Health checks
+
+| Check | Endpoint | What it checks | Used by |
+| --- | --- | --- | --- |
+| Liveness | `/health/live` | The process responds. No dependency checks, so a database outage does not restart every pod. | Kubernetes liveness probe |
+| Readiness | `/health/ready` | Critical dependencies are reachable (own database, Service Bus). A non-critical dependency such as Redis reports `Degraded` but keeps the pod ready, because the service can work without it. | Kubernetes readiness probe, load balancer |
+| Startup | `/health/startup` | Start-up work is finished (configuration loaded, caches warmed). | Kubernetes startup probe |
+| Stamp health | `/health/stamp` on the BFFs | The stamp can serve the purchase path. | Front Door origin probes; Front Door moves traffic away from an unhealthy stamp |
+| Synthetic journeys | External | Home page, product page, search, add to cart, and login, every 5 minutes from several regions. A synthetic checkout with a test product runs in staging after every deployment. | Application Insights availability tests |
+
+Health endpoints are not reachable from the internet, except the stamp health path that Front Door probes.
+
+### 11.3 Service level objectives
+
+Alerts are based on service level objectives (SLOs) for the journeys that matter to the business, not on
+individual servers.
+
+| Journey | Service level indicator | Objective (30 days) |
+| --- | --- | --- |
+| Browse and search | Share of requests that succeed in under 300 ms | 99.9% |
+| Cart | Share of cart requests that succeed in under 300 ms | 99.9% |
+| Checkout | Share of checkouts that reach a final state (confirmed or a clear failure) within 10 s, excluding PSP page time | 99.9% |
+| Partner API | Share of partner requests that succeed | 99.9% |
+| Stock freshness | Share of stock changes visible in all channels within 5 s | 99% |
+| Fiscalization | Share of receipts with a fiscal identifier (JIR) within 1 minute | 99.5%, and 100% within the legal deadline |
+
+### 11.4 Alerting
+
+- **Paging alerts are symptom-based.** They use multi-window SLO burn rates. A fast burn (the error budget
+  would be gone in about 2 days) pages the on-call engineer. A slow burn opens a ticket.
+- **Cause-based alerts open tickets or support a page.** Examples:
+
+  | Alert | Why it matters |
+  | --- | --- |
+  | Dead-letter queue is not empty | A business message failed and needs action |
+  | Oldest unsent outbox message is older than 1 minute | Events are not leaving a service |
+  | Consumer lag or queue length grows for 10 minutes | Consumers cannot keep up |
+  | Receipts without a fiscal identifier approach the legal deadline | Compliance risk |
+  | Any certificate (TLS, fiscal signing) expires in less than 30 days | Planned renewal |
+  | PSP or marketplace error rate above normal | Partner problem; check the partner status page |
+  | Database CPU, storage, or replica lag above threshold | Capacity |
+
+- **Routing.** Azure Monitor action groups send pages to the on-call tool (PagerDuty or an equivalent) and
+  post all alerts to the owning team's Teams channel. Each team is on call for its own services. The shared
+  platform has a rota across both teams.
+- **Runbooks.** Every alert links to a runbook in the repository: what the alert means, how to confirm it,
+  and the first steps to fix it.
+
+### 11.5 Dashboards as code
+
+Dashboards are Grafana JSON files in the repository, deployed to Azure Managed Grafana by the pipeline.
+Every service gets the same RED dashboard from a template. Business dashboards (orders per minute,
+conversion, payment success) are built on the same metrics. A dashboard change is a reviewed commit.
 
 ## 12. Code delivery plan
 
-_To be written._
+### 12.1 Repositories
+
+| Repository | Content | Owner |
+| --- | --- | --- |
+| `platform-app` (monorepo) | All services and BFFs, shared build properties, event and API contracts, tests, runbooks, dashboards | Each team owns its folders through `CODEOWNERS` |
+| `platform-gitops` | Kubernetes manifests (Helm values) per environment and stamp; the desired state for Argo CD | Both teams; production changes need approval |
+| `platform-infra` | Terraform modules and environment definitions (one reusable stamp module) | Shared platform owner |
+
+The monorepo keeps cross-service changes atomic and keeps one set of standards for two teams. CI runs
+only the pipelines of the services whose folders changed.
+
+### 12.2 Branching strategy
+
+The teams use **trunk-based development**.
+
+- `main` is always releasable.
+- Work happens on short-lived branches (1 to 2 days) and is merged by pull request.
+- A pull request needs a green CI run and one approval from the owning team (`CODEOWNERS`). It is
+  squash-merged, so every commit on `main` is one reviewed change.
+- Unfinished features are merged behind a feature flag (Azure App Configuration) instead of living on a
+  long branch. A flag is removed once its feature is fully rolled out.
+- A release is a tag (`<service>/vX.Y.Z`) on `main`. A hotfix is a normal pull request to `main`, released
+  with the fast path of the same pipeline.
+- Exception: the mobile apps cut a short-lived `release/mobile-X.Y` branch for app store submission,
+  because store review takes days. Fixes go to `main` first and are cherry-picked to the release branch.
+
+```mermaid
+gitGraph
+    commit id: "main"
+    branch feature/cart-merge
+    checkout feature/cart-merge
+    commit id: "merge logic"
+    commit id: "tests"
+    checkout main
+    merge feature/cart-merge id: "PR #101 squash"
+    branch feature/promo-rules
+    checkout feature/promo-rules
+    commit id: "rules behind flag"
+    checkout main
+    merge feature/promo-rules id: "PR #102 squash" tag: "cart/v1.4.0"
+    commit id: "PR #103"
+    branch release/mobile-2.3
+    checkout release/mobile-2.3
+    commit id: "store build 2.3.0"
+    checkout main
+    commit id: "PR #104 fix"
+    checkout release/mobile-2.3
+    cherry-pick id: "PR #104 fix"
+```
+
+### 12.3 Continuous integration
+
+GitHub Actions runs these stages for each changed service on every pull request and on every merge to `main`:
+
+| Stage | Tools | Fails the build when |
+| --- | --- | --- |
+| Build and unit tests | `dotnet build`, `dotnet test` | Compilation error, failing test, coverage below the agreed floor |
+| Integration tests | Testcontainers (PostgreSQL, Redis, Service Bus emulator) | Failing test |
+| Contract tests | Consumer contract tests for APIs and events | A change breaks a known consumer |
+| Static analysis | .NET analyzers, CodeQL | New high-severity finding |
+| Dependency and secret scan | Dependabot, GitHub secret scanning | Known vulnerable package, committed secret |
+| Container build and scan | Docker build, Microsoft Defender for Containers or Trivy | Critical vulnerability in the image |
+| SBOM and signing | SBOM generation, image signing | Missing SBOM or signature |
+| Publish | Push the image to Azure Container Registry | |
+
+On a merge to `main`, the last step opens an automatic commit in `platform-gitops` that sets the new image
+version for the `dev` environment.
+
+### 12.4 Continuous delivery
+
+```mermaid
+flowchart LR
+    pr["Pull request"] --> ci["CI: build, test, scan"]
+    ci --> main["Merge to main"]
+    main --> img["Signed image in ACR"]
+    img --> dev["dev: automatic deploy"]
+    dev --> stg["staging: promotion PR, automatic tests + load test"]
+    stg --> prod1["prod EU stamp: approval, canary"]
+    prod1 --> prodN["other prod stamps: canary, one stamp at a time"]
+```
+
+- **GitOps.** Argo CD in each cluster pulls the desired state from `platform-gitops` and corrects drift.
+  The CI system has no credentials for the clusters.
+- **Promotion.** Promotion to `staging` and `prod` is a pull request in `platform-gitops`. The approval of that
+  pull request is the release approval, and the Git history is the audit trail.
+- **Canary releases.** Argo Rollouts sends 5%, then 25%, 50%, and 100% of traffic to the new version. Between
+  steps, it compares error rate and latency with the old version using Prometheus metrics. A failed check
+  rolls back automatically.
+- **Stamp by stamp.** Production stamps are updated one at a time, so a bad release affects one region at most.
+- **Database migrations.** Migrations follow the expand and contract pattern: add new columns or tables first,
+  deploy code that uses both, then remove old structures in a later release. EF Core migration bundles run as a
+  Kubernetes job before the new version starts. A migration never removes something the running version uses.
+- **Infrastructure.** A pull request in `platform-infra` shows the Terraform plan. After approval, the pipeline
+  applies it. Each environment and stamp has its own Terraform state.
+
+### 12.5 Environments
+
+| Environment | Purpose | Data | Deployment |
+| --- | --- | --- | --- |
+| Local | Development | Docker Compose with PostgreSQL, Redis, and emulators | Developer |
+| `dev` | Integration of all services | Synthetic data | Every merge to `main`, automatic |
+| `staging` | Production-like tests, load tests, partner sandbox integrations (PSP test mode, fiscalization test service) | Synthetic data, production-sized | Promotion pull request |
+| `prod` | Production, one deployment per stamp | Real data | Promotion pull request with approval, canary |
+
+Environments have separate subscriptions, networks, and credentials. No environment other than `prod` can reach
+production data.
 
 ## 13. Implementation roadmap
 
