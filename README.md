@@ -4,7 +4,7 @@ This repository contains the solution to the Abysalto Senior Backend Developer t
 
 | Part | Location | Status |
 | --- | --- | --- |
-| High-level architecture and implementation strategy for a global multi-channel retail platform | [docs/architecture.md](docs/architecture.md) | In progress |
+| High-level architecture and implementation strategy for a global multi-channel retail platform | [docs/architecture.md](docs/architecture.md) | Complete |
 | Cart Web API (reference implementation of one service from the architecture) | `src/` | Not started |
 
 ## Architecture document
