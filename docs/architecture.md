@@ -556,6 +556,19 @@ path, and before every major campaign. The budget for one EU stamp, based on [se
 
 A release that misses the budget does not go to production.
 
+### 7.8 Availability and disaster recovery
+
+| Failure | Protection | Recovery target |
+| --- | --- | --- |
+| One pod or node fails | At least three replicas per service, spread across availability zones | No user impact |
+| One availability zone fails | Zone-redundant AKS, PostgreSQL HA, Service Bus, Redis | No user impact; database failover in under 2 minutes |
+| A whole region fails | Paired DR region with PostgreSQL geo-replicas, Service Bus geo-replication, infrastructure recreated from Terraform | RPO 5 minutes or less, RTO 1 hour or less (proposed; to be agreed with the client) |
+| Data corruption by a bug or an operator | Point-in-time restore of PostgreSQL | Restore to any point in the last 35 days |
+
+Anonymous browsing fails over to another healthy stamp at once, because catalog data exists in every stamp.
+Customer data does not move between stamps, so the customer's home stamp fails over to its own DR region.
+The team runs a DR drill for each stamp every six months.
+
 ## 8. Real-time data processing
 
 ### 8.1 Use cases
@@ -800,7 +813,26 @@ production data.
 
 ## 13. Implementation roadmap
 
-_To be written._
+The roadmap delivers a working purchase path early in one market and adds channels and regions after it.
+Durations assume two teams of five to six engineers each.
+
+| Phase | Duration | Team A: Shopping Experience | Team B: Order & Fulfilment | Exit criteria |
+| --- | --- | --- | --- | --- |
+| 0. Foundations | Weeks 1 to 4 | Service template (the Cart API in this repository), Web BFF skeleton, identity setup in Entra External ID | Terraform stamp module, AKS, Service Bus, CI/CD, GitOps, observability baseline | A template service deploys through the full pipeline to `dev` and `staging` with dashboards and alerts |
+| 1. MVP web shop, EU stamp, Croatia | Months 2 to 5 | Catalog with ERP/PIM import, basic pricing, Cart, Customer, Web BFF | Order saga, Payment with one PSP, Inventory, fiscalization, email notifications, back-office order view | Go-live criteria below are met |
+| 2. More channels | Months 5 to 8 | Mobile BFF and mobile apps, promotions and coupons, B2B price lists | Partner API in API Management (B2B), first marketplace connector, B2B e-invoicing, real-time analytics | First B2B partner and first marketplace live |
+| 3. Global growth | Months 8 to 12 | Localisation (languages, currencies), search tuning per market | Second stamp (US), then APAC; tax adapters per new country; more marketplaces | Second stamp live; DR drill passed in both stamps |
+
+**Go-live criteria for every new stamp or major channel:**
+
+- The load test meets the budget in [section 7.7](#77-capacity-validation).
+- An external penetration test has no open high or critical findings.
+- A DR drill restores the stamp within the recovery targets in [section 7.8](#78-availability-and-disaster-recovery).
+- Every paging alert has a runbook, and the on-call rota is staffed.
+- Fiscalization and payments pass end-to-end tests against the providers' test environments.
+
+The client's input is needed in phase 0: real traffic figures, the ERP/PIM interface, the PSP and markets,
+the target marketplaces, and the fiscal certificate. These are listed in [section 15](#15-risks-and-open-questions).
 
 ## 14. Architecture decision log
 
@@ -808,7 +840,31 @@ _To be written._
 
 ## 15. Risks and open questions
 
-_To be written._
+### 15.1 Risks
+
+| Risk | Impact | Mitigation |
+| --- | --- | --- |
+| The load assumptions in [section 1.3](#13-assumptions) are wrong | Under- or over-sized platform | Measure real traffic in phase 0; autoscaling and stamps absorb errors in either direction |
+| Two teams own twelve deployables | Slow delivery, on-call fatigue | Managed services, one service template, platform automation; propose a third team (platform or a new value stream) before phase 3 |
+| Fiscal and e-invoicing rules change | Non-compliance, rework | All tax logic sits behind the Integration Hub adapters; legal review each quarter; certified intermediary for e-invoicing |
+| Marketplace APIs differ and have strict rate limits | Stock or price out of sync, blocked accounts | One worker per marketplace, change coalescing, reconciliation jobs, alerts on partner errors |
+| Consistency bugs in distributed flows (saga, outbox) | Lost or duplicated orders, wrong stock | Idempotent consumers, saga state tests, daily reconciliation between Order, Payment, Inventory, and the PSP |
+| Extreme product drops exceed checkout capacity | Slow or failed checkouts at the worst moment | Queue-based checkout, hot-SKU handling; a virtual waiting room in front of checkout as an option for known drops |
+| A customer moves to another country or region | Personal data in the wrong stamp | A documented, audited migration process between stamps |
+| Dependence on Azure | Higher exit cost | Kubernetes, PostgreSQL, the Kafka protocol, and OpenTelemetry keep the core portable; Azure-specific services sit behind small adapters |
+| Cloud cost grows faster than revenue | Budget overrun | Cost per order as a tracked metric, budget alerts, scale-in to minimums at night, reserved capacity for the base load |
+
+### 15.2 Open questions for the client
+
+1. What are the real traffic numbers: daily active users, peak requests, orders per day, campaign calendar?
+2. What interface does the ERP/PIM offer: events, APIs, or batch files? How often do products, prices, and stock change?
+3. Which PSP or PSPs, for which markets and payment methods?
+4. Which marketplaces come first, and do they need stock and order sync only, or also catalog publishing?
+5. What do B2B partners expect: REST APIs only, or also EDI? Which credit and invoicing terms?
+6. Which countries follow Croatia, and in what order? This drives the tax adapters and the stamp plan.
+7. Are the proposed recovery targets (RPO 5 minutes, RTO 1 hour) acceptable?
+8. What are the data retention rules for orders, invoices, and personal data?
+9. Who builds and owns the web and mobile clients?
 
 ## 16. Reference implementation: Cart API
 
