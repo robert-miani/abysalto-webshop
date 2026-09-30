@@ -323,19 +323,293 @@ MFA, social login, and password reset (see [section 9](#9-security-and-authentic
 
 ## 5. Component communication
 
-_To be written._
+### 5.1 Communication styles
+
+| From | To | Style | Protocol |
+| --- | --- | --- | --- |
+| Web and mobile clients | Web BFF, Mobile BFF | Synchronous request/response | HTTPS, JSON (HTTP/2 and HTTP/3 at Front Door) |
+| Web and mobile clients | Notifications (through SignalR Service) | Server push | WebSocket, with fallback to long polling |
+| B2B partners, marketplaces | API Management | Synchronous request/response | HTTPS, JSON, OAuth2 client credentials |
+| Platform | B2B partners, marketplaces | Outbound webhooks and partner API calls | HTTPS, payload signed with HMAC |
+| BFFs | Domain services | Synchronous request/response | HTTPS, JSON inside the cluster |
+| Domain service | Domain service | Asynchronous events and commands | Azure Service Bus topics (events) and queues (commands) |
+| Domain services, BFFs | Stream processing | Asynchronous streams | Azure Event Hubs (Kafka protocol) |
+
+### 5.2 When to use synchronous and when to use asynchronous calls
+
+A service uses a **synchronous** call only when both conditions hold:
+
+1. A user is waiting for the answer.
+2. The caller cannot keep a local copy of the data, because the data must be exact at that moment
+   (for example the final price at checkout).
+
+In every other case, services communicate with **events**. A service publishes a fact about its own data
+(`ProductChanged`, `StockChanged`, `OrderConfirmed`), and other services keep the local copy they need.
+This keeps services available when a neighbour is down, and it keeps the synchronous call chain short.
+The rule for the chain: a BFF calls domain services, and a domain service calls at most one other service
+synchronously per request.
+
+**Events** use Service Bus topics: one topic per publishing service, one subscription per consumer.
+**Commands** (a request that exactly one service must carry out, such as `ReserveStock`) use Service Bus queues.
+**High-volume streams** (clickstream, stock and price change feeds, telemetry for analytics) use Event Hubs.
+The rule that separates the two brokers: a business workflow step goes to Service Bus; a stream that
+many readers process in bulk goes to Event Hubs.
+
+### 5.3 Reliable messaging
+
+Messaging failures must not lose an order or send it twice. Every service applies the same four rules:
+
+| Rule | Implementation |
+| --- | --- |
+| **Transactional outbox** | A service writes its state change and the outgoing message in the same database transaction (an `outbox` table). A background relay publishes the outbox rows to Service Bus and marks them as sent. The service never publishes directly inside a request. |
+| **Idempotent consumers** | Each consumer records the IDs of processed messages in an `inbox` table, in the same transaction as its own state change. A duplicate message is acknowledged and skipped. Service Bus duplicate detection is an extra layer, not the only one. |
+| **Ordered processing where needed** | Messages about the same order use a Service Bus **session** keyed by order ID, so one consumer handles them in order. Other messages are processed in parallel. |
+| **Retries and dead letters** | Consumers retry with exponential backoff. After the maximum number of attempts, the message goes to the dead-letter queue. A dead letter raises an alert, and an operator replays it with a tool after the cause is fixed. |
+
+Synchronous calls between services use the standard .NET resilience handler
+(`Microsoft.Extensions.Http.Resilience`): timeout, retry with jitter for idempotent requests only,
+and a circuit breaker.
+
+### 5.4 Contracts and versioning
+
+- Every HTTP API has an OpenAPI description, generated from code and published in CI.
+- Public and channel APIs are versioned in the URL (`/v1/...`). A breaking change creates a new version.
+  The old version stays available until its traffic falls below an agreed level. The Mobile BFF keeps old
+  versions longer, because old app versions stay installed.
+- Events use the CloudEvents envelope with a JSON payload. Event schemas live in a shared contracts
+  repository. Only backward-compatible changes are allowed within a version (add optional fields, never
+  remove or rename). A breaking change publishes a new event type next to the old one.
+- Consumer contract tests run in CI, so a provider cannot release a change that breaks a known consumer.
+
+### 5.5 Checkout flow
+
+Checkout crosses five services, so it runs as an **orchestrated saga** owned by the Order service. The Order
+service keeps the saga state in its database, sends commands, waits for replies, and runs compensations
+when a step fails or times out. Side effects after the order is confirmed (fiscalization, notifications,
+analytics) are not part of the saga. They react to the `OrderConfirmed` and `PaymentCaptured` events.
+
+Checkout starts with the `CartCheckedOut` event, not with a synchronous call. The client gets
+`202 Accepted` with a checkout ID and follows the progress through SignalR (or by polling the order status).
+This absorbs checkout peaks in a queue (see [section 7.4](#74-checkout-peaks)).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor C as Customer
+    participant BFF as Web BFF
+    participant Cart
+    participant Order as Order (saga)
+    participant Pricing
+    participant Inv as Inventory
+    participant Pay as Payment
+    participant PSP
+
+    C->>BFF: Place order
+    BFF->>Cart: POST /carts/{id}/checkout
+    Cart-->>BFF: 202 Accepted, checkoutId
+    Cart--)Order: CartCheckedOut (outbox)
+    Order->>Pricing: Final price for cart snapshot (sync)
+    Order->>Order: Create order (Pending)
+    Order--)Inv: ReserveStock (15 min hold)
+    Inv--)Order: StockReserved
+    Order--)Pay: CreatePaymentSession
+    Pay->>PSP: Create hosted payment session
+    Pay--)Order: PaymentSessionCreated (redirect URL)
+    Order--)C: Redirect URL (SignalR push)
+    C->>PSP: Pay on PSP page (3-D Secure)
+    PSP->>Pay: Webhook: authorized
+    Pay--)Order: PaymentAuthorized
+    Order->>Order: Confirm order
+    Order--)Inv: CommitStock
+    Order--)Cart: OrderConfirmed (cart closed)
+    Order--)C: Order confirmed (SignalR push)
+```
+
+Failure and compensation paths:
+
+| Failure | Saga action |
+| --- | --- |
+| Stock not available | Order is cancelled before payment. The customer sees which items are missing and returns to the cart. |
+| Payment declined or abandoned | Order sends `ReleaseStock`, sets the order to `PaymentFailed`, and the cart is reopened. |
+| No payment result before the stock hold expires (15 minutes) | Order asks Payment to cancel the session, then releases the stock. A late authorization is voided by Payment. |
+| Price changed between cart and checkout | Order stops before stock reservation and returns the new price for customer confirmation. |
+| A saga message fails repeatedly | The message goes to the dead-letter queue, the order stays in its current state, and an alert is raised. Nothing is compensated automatically on an unknown error. |
 
 ## 6. Main technology choices
 
-_To be written._
+| Concern | Choice | Reason |
+| --- | --- | --- |
+| Language and runtime | C#, .NET 10 (LTS), ASP.NET Core Minimal APIs | LTS support until November 2028, high throughput per core, the team's core skill |
+| Compute | Azure Kubernetes Service (AKS) Automatic | Managed node pools, upgrades, and autoscaling; standard Kubernetes skills and tooling; room to grow past two teams |
+| Container registry | Azure Container Registry, geo-replicated to every stamp region | Images are pulled from the local region |
+| Global entry, CDN, WAF | Azure Front Door Premium | One global anycast entry with CDN caching, WAF, bot protection, and DDoS protection |
+| Partner API gateway | Azure API Management | Partner onboarding, keys, OAuth2, quotas, developer portal without custom code |
+| Business messaging | Azure Service Bus Premium | Topics, sessions, duplicate detection, dead-letter queues, private endpoints |
+| Streaming | Azure Event Hubs (Kafka protocol) | High-throughput, replayable streams; Kafka clients work without changes |
+| Relational data | Azure Database for PostgreSQL Flexible Server, one database per service | Zone-redundant HA, read replicas, geo-replicas for DR, mature EF Core provider |
+| Cache | Azure Managed Redis | Low-latency cache for prices, carts, stock counters, rate limits |
+| Product search | Azure AI Search | Full-text search, facets, filters, synonyms, per-language analyzers |
+| Media | Azure Blob Storage behind Front Door | Cheap storage, served from the CDN edge |
+| Real-time push | Azure SignalR Service | Managed WebSocket connections at scale; services push without holding connections |
+| Stream processing | Azure Stream Analytics | SQL-like windowed queries on Event Hubs streams without custom code |
+| Customer identity | Microsoft Entra External ID | Managed customer identity: sign-up, MFA, social login, OIDC |
+| Staff identity | Microsoft Entra ID (client's workforce tenant) | Single sign-on and conditional access for staff |
+| Secrets, keys, certificates | Azure Key Vault (HSM-backed keys for signing) | Central secret store; the fiscal signing certificate never leaves the vault |
+| Configuration and feature flags | Azure App Configuration | Central configuration and feature flags per environment |
+| Observability | OpenTelemetry, Azure Monitor (Application Insights, Log Analytics), Azure Monitor managed Prometheus, Azure Managed Grafana | Vendor-neutral instrumentation, managed back ends |
+| Infrastructure as code | Terraform | Declarative, reviewed infrastructure changes, reusable stamp module |
+| CI and CD | GitHub Actions (CI), Argo CD and Argo Rollouts (CD) | Pipelines as code; GitOps deployment with drift detection and canary releases |
+| Main libraries | EF Core with Npgsql, Azure SDK for .NET, `Microsoft.Extensions.Http.Resilience`, FluentValidation, OpenTelemetry .NET | Standard, supported libraries with no commercial licence risk |
+| Testing | xUnit, Testcontainers, Azure Load Testing (k6-compatible scripts) | Unit and integration tests against real dependencies; repeatable load tests |
 
 ## 7. Scaling strategy
 
-_To be written._
+### 7.1 Scaling by layer
+
+| Layer | How it scales | Trigger |
+| --- | --- | --- |
+| Edge | Front Door serves static files, images, and cacheable API responses from the edge | Always on |
+| BFFs and HTTP services | Horizontal Pod Autoscaler adds pods | CPU and requests per second per pod |
+| Message-driven workers | KEDA adds consumers | Service Bus queue length and Event Hubs consumer lag |
+| Cluster nodes | AKS Automatic node autoprovisioning adds and removes nodes | Pods that cannot be scheduled |
+| Relational data | Scale up the server tier; add read replicas for read-heavy services; partition large tables | Replica lag, CPU, IOPS, storage alerts |
+| Cache | Scale the Redis tier or add shards | Memory use, server load |
+| Search | Add replicas (query load) or partitions (index size) | Query latency, index size |
+| Regions | Add a new stamp | A new market or a stamp near its tested capacity |
+
+All HTTP services are stateless, so the platform scales out by adding pods. Each service sets a minimum
+number of replicas (at least three, one per availability zone) so a zone failure never removes a service.
+
+### 7.2 Caching
+
+Most traffic is reading the catalog. The design serves those reads from caches and keeps the databases
+for writes and cache misses.
+
+| Data | Cache | Lifetime | Invalidation |
+| --- | --- | --- | --- |
+| Static files (SPA, fonts, images) | Front Door CDN | Long (file names contain a content hash) | New deployment changes the file names |
+| Product list and product detail responses | Front Door CDN | 60 s, with stale-while-revalidate | `ProductChanged` event purges the affected paths |
+| Prices per price list | Redis | 5 minutes | `PriceChanged` event deletes the key |
+| Cart | Redis, cache-aside | 30 minutes idle | Every cart write deletes the key |
+| Stock level shown to customers | Redis | Updated by events | `StockChanged` event updates the value; the exact check happens at reservation |
+| Customer session and rate-limit counters | Redis | Session length | Expiry |
+
+The cache is an optimisation, never the source of truth. When Redis is not available, services read
+from the database and serve slower responses instead of errors.
+
+### 7.3 Protecting the platform under load
+
+- **Rate limits in three layers.** Front Door WAF limits requests per client IP. API Management applies
+  quotas per partner subscription. Services apply per-user limits with the ASP.NET Core rate limiter.
+- **Bulkheads and circuit breakers.** Each external dependency has its own connection pool and circuit
+  breaker. A slow marketplace or PSP does not use up threads that other requests need.
+- **Graceful degradation.** Each service defines what it drops first under stress:
+
+  | Situation | Behaviour |
+  | --- | --- |
+  | Search is slow or down | Category pages are served from the CDN; free-text search shows a message |
+  | Recommendations or personalisation are slow | The BFF omits them after a short timeout |
+  | Pricing is slow | Product lists show cached prices; checkout always recalculates |
+  | Fiscalization service is down | Receipts are issued and delivered later (see [section 10](#10-integration-with-external-services)) |
+
+### 7.4 Checkout peaks
+
+Checkout is the most expensive flow and the most important one. During a campaign, orders can arrive
+100 times faster than on an average day. The design uses **queue-based load levelling**: the Cart service
+accepts the checkout and publishes `CartCheckedOut`. The Order service reads from the queue at the rate it
+can handle, and KEDA adds Order workers as the queue grows. The customer sees a short "processing" state
+instead of an error. For extreme product drops, a virtual waiting room in front of checkout is an option
+and is listed under risks.
+
+### 7.5 Stock contention on popular products
+
+When thousands of customers buy the same product at the same moment, one database row becomes a
+bottleneck. The Inventory service handles this in two steps:
+
+1. **Default:** a conditional update in PostgreSQL
+   (`UPDATE ... SET available = available - @qty WHERE sku = @sku AND available >= @qty`). This is atomic and
+   needs no application lock.
+2. **Hot SKUs** (flagged by merchandising for a campaign, or detected by lock-wait metrics): an atomic counter
+   in Redis admits reservations first. The database is updated asynchronously, and a reconciliation job
+   compares both stores every few minutes.
+
+### 7.6 Data growth
+
+- Each service has its own database, so load is spread across servers from the start.
+- Large tables (orders, order lines, integration logs) are partitioned by month. Old partitions are moved
+  to cheaper storage according to the retention policy.
+- Read-heavy services (Catalog, Pricing) add read replicas.
+- Horizontal sharding (for example Order data by customer ID) is **not** part of the first release. The team
+  revisits it when a single service database needs more than the largest available tier, or passes about
+  4 TB of hot data.
+
+### 7.7 Capacity validation
+
+Load tests run in the staging environment with Azure Load Testing before each release that touches a hot
+path, and before every major campaign. The budget for one EU stamp, based on [section 1.3](#13-assumptions):
+
+| Scenario | Target |
+| --- | --- |
+| Browse and search | 20,000 requests/s at the edge, 7,000 requests/s at the origin, p95 below 300 ms |
+| Cart writes | 1,000 requests/s, p95 below 300 ms |
+| Checkout | 300 orders/s, confirmation within 10 s at p95 (excluding time spent on the PSP page) |
+
+A release that misses the budget does not go to production.
 
 ## 8. Real-time data processing
 
-_To be written._
+### 8.1 Use cases
+
+| Use case | Latency target | Consumer |
+| --- | --- | --- |
+| Stock changes visible in all channels, including marketplaces | 5 s (p95) | Catalog, BFF caches, marketplace connectors |
+| Price and promotion changes visible in all channels | 5 s (p95) | Catalog, BFF caches, marketplace connectors |
+| Order status updates to the customer | 2 s | Web and mobile clients |
+| Fraud and abuse signals (for example many orders from one card token or IP) | 10 s | Order, Payment |
+| Live business metrics (orders per minute, conversion, payment success rate) | 1 minute | Business dashboards, alerting |
+
+### 8.2 Two processing tiers
+
+Real-time processing has two tiers with different tools.
+
+- **Operational tier.** Business events that change what the platform does. Services publish them through
+  the outbox to Service Bus, and .NET consumers act on them. For example, Inventory publishes
+  `StockChanged`. Catalog updates the availability in the search index, the BFF caches update the stock
+  value, and the marketplace connectors push the new stock to each marketplace. The connectors group
+  changes per SKU over a short window, so they stay within each marketplace's API rate limits.
+- **Analytical tier.** High-volume streams processed in bulk. BFFs publish clickstream events, and services
+  publish order and payment events to Event Hubs. Azure Stream Analytics runs windowed queries on these
+  streams: sales per minute, conversion funnel, payment success rate, and fraud velocity rules. Results go
+  to live dashboards, to Azure Monitor alerts, and (for fraud signals) to a Service Bus topic that Order and
+  Payment consume. Event Hubs Capture writes all raw events to Azure Data Lake Storage for the data
+  platform and BI.
+
+```mermaid
+flowchart LR
+    inv["Inventory"] -->|"StockChanged"| sb[["Service Bus"]]
+    pricing["Pricing"] -->|"PriceChanged"| sb
+    order["Order"] -->|"OrderStatusChanged"| sb
+    sb --> catalog["Catalog: search index"]
+    sb --> hub["Integration Hub: marketplace connectors"]
+    sb --> notif["Notifications"]
+    notif --> signalr["SignalR Service"] --> clients(["Web and mobile clients"])
+
+    bff["BFFs: clickstream"] --> eh[["Event Hubs"]]
+    order --> eh
+    pay["Payment"] --> eh
+    eh --> asa["Stream Analytics"]
+    asa --> dash["Live dashboards"]
+    asa --> alerts["Azure Monitor alerts"]
+    asa -->|"fraud signals"| sb
+    eh --> lake[("Data Lake via Event Hubs Capture")]
+```
+
+### 8.3 Push to clients
+
+The Notifications service sends real-time updates to open web and mobile sessions through Azure SignalR
+Service. The client opens the connection through its BFF, which authenticates the user and adds the
+connection to a group for that user. Services never hold client connections, so they scale without sticky
+sessions. When the app is closed, Notifications sends a mobile push notification instead.
 
 ## 9. Security and authentication
 
