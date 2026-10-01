@@ -37,12 +37,12 @@ observability, and delivery process. The design of the web and mobile clients an
 **Assumptions.** The numbers are estimates that set the order of magnitude, to be replaced with real data
 at the start of the project.
 
-| Metric | Estimate |
-| --- | --- |
-| Daily active users | 5 million across the EU |
-| Requests | about 2,300/s on average, about 20,000/s at the edge during campaigns, of which 60% to 70% is served from the content delivery network (CDN) |
-| Orders | about 120,000/day; about 40/s sustained at campaign peak, short bursts up to 300/s |
-| Catalog | 0.5 to 2 million SKUs (stock keeping units) |
+| Metric | Estimate | Drives |
+| --- | --- | --- |
+| Daily active users | 5 million across the EU | |
+| Requests | about 2,300/s on average, about 20,000/s at the edge during campaigns, of which 60% to 70% is served from the content delivery network (CDN) | One EU region is enough; edge caching first |
+| Orders | about 120,000/day; about 40/s sustained at campaign peak, short bursts up to 300/s | Queue-based checkout; PostgreSQL without sharding |
+| Catalog | 0.5 to 2 million SKUs (stock keeping units) | Managed search service, CDN-cached product pages |
 
 - The platform sells in the EU. Croatia is the launch country; other EU countries follow.
 - The ERP/PIM is the master for products, base prices, and physical stock. The platform owns promotions,
@@ -330,7 +330,7 @@ Real-time processing has two tiers:
 
 | Actor | Authentication |
 | --- | --- |
-| Web shop customer | Entra External ID with OpenID Connect and PKCE. The Web BFF keeps the tokens on the server; the browser only gets an `HttpOnly`, `Secure` session cookie. |
+| Web shop customer (SPA in the browser) | Entra External ID with OpenID Connect and PKCE, run by the Web BFF. The Web BFF keeps the tokens on the server; the SPA never sees a token and only gets an `HttpOnly`, `Secure` session cookie. |
 | Mobile app customer | Entra External ID with PKCE; short-lived access tokens; refresh tokens in the device's secure storage. |
 | B2B partner system | OAuth2 client credentials with a certificate-signed assertion, validated by API Management with per-partner quotas. |
 | Client staff | The client's Entra ID with MFA and conditional access. |
@@ -338,6 +338,10 @@ Real-time processing has two tiers:
 
 - **Authorization.** Every service checks that the caller owns the resource, so a customer can only access
   their own cart, orders, and profile. Partners get scopes and staff get roles.
+- **Web shop SPA.** The SPA and the Web BFF share one origin behind Front Door, so no CORS rules are needed.
+  The session cookie uses `SameSite=Lax`, and write requests carry an anti-forgery token against CSRF. A strict
+  Content Security Policy and security headers (for example HSTS) limit XSS, and the static files contain no
+  secrets, because everything in them is public.
 - **Payments.** Customers enter card data only on the PSP's hosted payment page. The platform stores only PSP
   references, which keeps it in the smallest PCI DSS scope (SAQ A). The PSP runs 3-D Secure.
 - **Data protection.** TLS everywhere, encryption at rest, private endpoints for all data stores, outbound
