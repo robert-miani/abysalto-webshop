@@ -20,7 +20,6 @@
 11. [Monitoring and alerting](#11-monitoring-and-alerting)
 12. [Code delivery plan](#12-code-delivery-plan)
 13. [Key decisions](#13-key-decisions)
-14. [Risks and open questions](#14-risks-and-open-questions)
 
 ---
 
@@ -176,7 +175,7 @@ flowchart TB
     signalr -.->|"push"| clients
 ```
 
-Each service has its own data store, listed in [section 4](#4-key-components-and-responsibilities).
+All components in the diagram, with their data stores, are described in [section 4](#4-key-components-and-responsibilities).
 
 ## 4. Key components and responsibilities
 
@@ -184,6 +183,8 @@ Each service has its own data store, listed in [section 4](#4-key-components-and
 
 | Component | Responsibility |
 | --- | --- |
+| Azure Front Door | Single entry point for all channels: TLS, CDN caching, WAF, DDoS protection, routing to the active region. |
+| Web shop SPA | The web shop as a single-page application (SPA). Its static files (HTML, JavaScript, CSS, images) are stored in Blob Storage and served from the Front Door CDN, so loading the shop puts no load on the services. |
 | Web BFF and Mobile BFF (Backend for Frontend) | One API per first-party channel. Aggregate data from several services per screen. The Web BFF runs the login flow and keeps tokens server-side. |
 | Azure API Management | Partner API for B2B partners and marketplaces: onboarding, OAuth2, keys, quotas, developer portal. |
 | Back-office BFF | API for the client's staff: merchandising, order management, refunds, customer service. |
@@ -201,6 +202,17 @@ Each service has its own data store, listed in [section 4](#4-key-components-and
 | Inventory | Available-to-sell stock and reservations; publishes stock changes | PostgreSQL, Redis | B |
 | Integration Hub | All external integrations behind an anti-corruption layer, one worker per connector | PostgreSQL | B |
 | Notifications | Email, SMS, push messages, and real-time updates to open sessions | PostgreSQL | B |
+
+**Messaging and real-time infrastructure**
+
+| Component | Responsibility |
+| --- | --- |
+| Azure Service Bus | Business events and commands between services (for example `CartCheckedOut`, `StockChanged`, `OrderPaid`), with retries, dead-letter queues, and ordered processing per checkout. |
+| Azure Event Hubs | High-volume event streams for analytics: clickstream, order, and payment events. |
+| Azure Stream Analytics | Live metrics and fraud signals computed from the Event Hubs streams. |
+| Azure SignalR Service | Pushes order status and stock updates to open web and mobile sessions, so services never hold client connections. |
+
+These are shared components, owned jointly by both teams.
 
 The teams are split by **value stream**, so most features need only one team. **Team A (Shopping
 Experience)** owns finding a product, the cart, and the customer account, plus the web and mobile BFFs.
@@ -431,23 +443,9 @@ flowchart LR
 | --- | --- | --- | --- |
 | Coarse-grained microservices, teams split by value stream | Very different load per domain; two teams with one flow each | Modular monolith (cannot scale catalog and checkout separately); fine-grained services (too many for two teams) | A service needs both teams in most sprints |
 | AKS Automatic for compute | Many services and workers, event-driven scaling, canary releases | Azure Container Apps (less control) | Cluster operations take more than 20% of one engineer |
-| Service Bus with outbox for business events; Event Hubs for streams | Dead-letter queues and sessions for workflows; throughput for analytics | One broker for both | One broker covers both needs in practice |
+| Service Bus with outbox for business events; Event Hubs for streams | Dead-letter queues and sessions for workflows; throughput for analytics | Self-run RabbitMQ and Kafka (no first-party managed option on Azure, operational load for two teams); one broker for both jobs | One broker covers both needs in practice |
 | Orchestrated checkout saga, started asynchronously | Five services with compensations; peaks need a buffer | Choreography (implicit flow); synchronous chain (fails under peaks) | Checkout confirmation stays above 10 s |
 | PostgreSQL per service, Redis as cache | ACID for orders and payments; team skills | Cosmos DB (weak multi-document transactions) | A database outgrows the largest tier |
 | One EU region with a warm DR region | EU-only market; one region is close enough to all EU users | Several active regions (double cost and complexity) | Expansion outside the EU |
 | Managed identity (Entra External ID) and PSP-hosted payment page | Identity and card data are the highest-risk areas; managed services and SAQ A reduce the risk | Self-hosted identity server; own card processing | A required feature is missing |
 | Asynchronous fiscalization through the Integration Hub | A Tax Administration outage must not stop sales | Synchronous fiscalization in checkout | The fiscal rules change |
-
-## 14. Risks and open questions
-
-| Risk | Mitigation |
-| --- | --- |
-| The load assumptions are wrong | Measure real traffic early; autoscaling absorbs errors in both directions |
-| Two teams own twelve services | Managed services, one service template, automation; add a third team when the backlog demands it |
-| Consistency bugs in distributed flows | Outbox, idempotency, and daily reconciliation between Order, Payment, Inventory, and the PSP |
-
-Open questions for the client:
-
-1. What are the real traffic numbers and the campaign calendar?
-2. What interface does the ERP/PIM offer (events, APIs, or batch files)?
-3. Which EU countries, marketplaces, and B2B partners come after the launch, and in what order?
