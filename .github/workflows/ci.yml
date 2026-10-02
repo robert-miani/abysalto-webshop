@@ -23,7 +23,7 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Restore
+      - name: Restore (NuGet Audit checks for vulnerable packages)
         run: dotnet restore CartService.slnx
 
       - name: Build (warnings as errors)
@@ -50,14 +50,3 @@ jobs:
 
       - name: Build image
         run: docker build --tag cartservice-api:ci .
-
-  dependency-review:
-    name: Dependency review
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: high
