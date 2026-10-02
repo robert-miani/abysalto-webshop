@@ -15,6 +15,10 @@ architecture view, key components, scaling, security, external integrations (inc
 fiscalization), monitoring, and the code delivery plan. A decision log records each load-bearing
 decision with its reason, the rejected alternative, and the condition to revisit it.
 
+GitHub renders the diagrams in the Markdown file. To read the document with its diagrams outside GitHub,
+open [docs/architecture.html](docs/architecture.html) in a browser (it needs an internet connection to load
+the Markdown and Mermaid renderers). The Markdown file is the source; the HTML file is a rendered copy.
+
 ## Cart API
 
 Run instructions will be added when the implementation starts.
