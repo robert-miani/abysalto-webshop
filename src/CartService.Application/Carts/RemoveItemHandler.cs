@@ -11,12 +11,14 @@ public sealed class RemoveItemHandler
     private readonly ICartRepository _carts;
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _time;
+    private readonly ICartCache _cache;
 
-    public RemoveItemHandler(ICartRepository carts, IUnitOfWork unitOfWork, TimeProvider time)
+    public RemoveItemHandler(ICartRepository carts, IUnitOfWork unitOfWork, TimeProvider time, ICartCache cache)
     {
         _carts = carts;
         _unitOfWork = unitOfWork;
         _time = time;
+        _cache = cache;
     }
 
     /// <summary>
@@ -29,5 +31,6 @@ public sealed class RemoveItemHandler
 
         cart.RemoveItem(productId, _time.GetUtcNow());
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+        await _cache.RemoveAsync(cart, cancellationToken);
     }
 }

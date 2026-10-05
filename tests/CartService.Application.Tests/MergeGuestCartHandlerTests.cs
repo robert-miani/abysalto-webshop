@@ -193,6 +193,6 @@ public sealed class MergeGuestCartHandlerTests
 
     private MergeGuestCartHandler CreateHandler()
     {
-        return new MergeGuestCartHandler(_environment.Carts, _environment.UnitOfWork, _environment.Time);
+        return new MergeGuestCartHandler(_environment.Carts, _environment.UnitOfWork, _environment.Time, _environment.Cache);
     }
 }

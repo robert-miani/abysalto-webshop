@@ -2,8 +2,10 @@ namespace CartService.Infrastructure;
 
 using System;
 using CartService.Application.Abstractions;
+using CartService.Infrastructure.Caching;
 using CartService.Infrastructure.Catalog;
 using CartService.Infrastructure.Guests;
+using CartService.Infrastructure.Health;
 using CartService.Infrastructure.Idempotency;
 using CartService.Infrastructure.Messaging;
 using CartService.Infrastructure.Outbox;
@@ -38,6 +40,8 @@ public static class Module
         services.AddSingleton<IProductCatalog, ConfiguredProductCatalog>();
         services.AddSingleton<IGuestTokenService, GuestTokenService>();
 
+        services.AddCartCache();
+        services.AddCartHealthChecks();
         services.AddScoped<ICartRepository, CartRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<IOutbox, OutboxWriter>();

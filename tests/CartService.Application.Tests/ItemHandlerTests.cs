@@ -199,16 +199,16 @@ public sealed class ItemHandlerTests
 
     private AddItemHandler CreateAddHandler()
     {
-        return new AddItemHandler(_environment.Carts, _environment.UnitOfWork, _environment.Catalog, _environment.Time);
+        return new AddItemHandler(_environment.Carts, _environment.UnitOfWork, _environment.Catalog, _environment.Time, _environment.Cache);
     }
 
     private ChangeItemQuantityHandler CreateChangeHandler()
     {
-        return new ChangeItemQuantityHandler(_environment.Carts, _environment.UnitOfWork, _environment.Time);
+        return new ChangeItemQuantityHandler(_environment.Carts, _environment.UnitOfWork, _environment.Time, _environment.Cache);
     }
 
     private RemoveItemHandler CreateRemoveHandler()
     {
-        return new RemoveItemHandler(_environment.Carts, _environment.UnitOfWork, _environment.Time);
+        return new RemoveItemHandler(_environment.Carts, _environment.UnitOfWork, _environment.Time, _environment.Cache);
     }
 }

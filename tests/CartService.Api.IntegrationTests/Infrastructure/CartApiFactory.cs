@@ -19,6 +19,9 @@ public sealed class CartApiFactory : WebApplicationFactory<Program>
         // Most tests do not need a message broker, so the relay is off. A test that does need it turns it on.
         builder.UseSetting("Outbox:Enabled", "false");
 
+        // The Development settings point to a Redis on localhost. Tests have no cache unless they ask for one.
+        builder.UseSetting("Cache:ConnectionString", string.Empty);
+
         // Tests send many requests from one address. The tests of the limits turn them on again.
         builder.UseSetting("RateLimiting:Enabled", "false");
     }

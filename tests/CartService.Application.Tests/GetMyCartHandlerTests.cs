@@ -23,7 +23,7 @@ public sealed class GetMyCartHandlerTests
         Cart cart = Cart.CreateForCustomer(customerId, HandlerEnvironment.Start);
         _environment.Carts.Seed(cart);
 
-        CartDto dto = await new GetMyCartHandler(_environment.Carts).HandleAsync(customerId, Token);
+        CartDto dto = await new GetMyCartHandler(_environment.Carts, _environment.Cache).HandleAsync(customerId, Token);
 
         dto.Id.ShouldBe(cart.Id);
     }
@@ -32,6 +32,6 @@ public sealed class GetMyCartHandlerTests
     public async Task ACustomerWithoutAnActiveCartGetsNotFound()
     {
         await Should.ThrowAsync<CartNotFoundException>(
-            () => new GetMyCartHandler(_environment.Carts).HandleAsync(Guid.NewGuid(), Token));
+            () => new GetMyCartHandler(_environment.Carts, _environment.Cache).HandleAsync(Guid.NewGuid(), Token));
     }
 }

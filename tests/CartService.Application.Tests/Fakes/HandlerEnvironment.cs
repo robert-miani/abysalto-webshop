@@ -18,6 +18,7 @@ internal sealed class HandlerEnvironment
         Catalog = new FakeProductCatalog();
         GuestTokens = new FakeGuestTokenService();
         Time = new FakeTimeProvider(Start);
+        Cache = new FakeCartCache();
     }
 
     public InMemoryCartRepository Carts { get; }
@@ -31,4 +32,6 @@ internal sealed class HandlerEnvironment
     public FakeGuestTokenService GuestTokens { get; }
 
     public FakeTimeProvider Time { get; }
+
+    public FakeCartCache Cache { get; }
 }

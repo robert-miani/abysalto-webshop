@@ -9,10 +9,12 @@ using CartService.Domain;
 public sealed class GetMyCartHandler
 {
     private readonly ICartRepository _carts;
+    private readonly ICartCache _cache;
 
-    public GetMyCartHandler(ICartRepository carts)
+    public GetMyCartHandler(ICartRepository carts, ICartCache cache)
     {
         _carts = carts;
+        _cache = cache;
     }
 
     /// <summary>
@@ -20,9 +22,18 @@ public sealed class GetMyCartHandler
     /// </summary>
     public async Task<CartDto> HandleAsync(Guid customerId, CancellationToken cancellationToken)
     {
+        CachedCart? cached = await _cache.GetActiveByCustomerAsync(customerId, cancellationToken);
+
+        if (cached is not null)
+        {
+            return cached.Cart;
+        }
+
         Cart cart = await _carts.GetActiveByCustomerAsync(customerId, cancellationToken)
             ?? throw new CartNotFoundException();
+        CartDto dto = CartDto.From(cart);
+        await _cache.SetAsync(cart, dto, cancellationToken);
 
-        return CartDto.From(cart);
+        return dto;
     }
 }

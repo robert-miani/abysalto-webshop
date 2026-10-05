@@ -11,12 +11,14 @@ public sealed class ChangeItemQuantityHandler
     private readonly ICartRepository _carts;
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _time;
+    private readonly ICartCache _cache;
 
-    public ChangeItemQuantityHandler(ICartRepository carts, IUnitOfWork unitOfWork, TimeProvider time)
+    public ChangeItemQuantityHandler(ICartRepository carts, IUnitOfWork unitOfWork, TimeProvider time, ICartCache cache)
     {
         _carts = carts;
         _unitOfWork = unitOfWork;
         _time = time;
+        _cache = cache;
     }
 
     public async Task<CartDto> HandleAsync(
@@ -30,6 +32,7 @@ public sealed class ChangeItemQuantityHandler
 
         cart.ChangeQuantity(productId, quantity, _time.GetUtcNow());
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+        await _cache.RemoveAsync(cart, cancellationToken);
 
         return CartDto.From(cart);
     }
