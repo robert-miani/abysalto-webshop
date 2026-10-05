@@ -34,6 +34,11 @@ internal sealed class HookedCartRepository : ICartRepository
         return _inner.GetActiveByCustomerAsync(customerId, cancellationToken);
     }
 
+    public Task<Cart?> GetByGuestTokenHashAsync(string guestTokenHash, CancellationToken cancellationToken)
+    {
+        return _inner.GetByGuestTokenHashAsync(guestTokenHash, cancellationToken);
+    }
+
     public void Add(Cart cart)
     {
         _inner.Add(cart);

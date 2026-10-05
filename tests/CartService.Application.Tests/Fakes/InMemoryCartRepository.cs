@@ -30,6 +30,11 @@ internal sealed class InMemoryCartRepository : ICartRepository
         return Task.FromResult(cart);
     }
 
+    public Task<Cart?> GetByGuestTokenHashAsync(string guestTokenHash, CancellationToken cancellationToken)
+    {
+        return Task.FromResult(_saved.FirstOrDefault(cart => cart.GuestTokenHash == guestTokenHash));
+    }
+
     public void Add(Cart cart)
     {
         _pending.Add(cart);
