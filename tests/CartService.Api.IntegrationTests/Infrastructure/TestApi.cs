@@ -32,6 +32,9 @@ internal sealed class TestApi : IDisposable
         });
     }
 
+    /// <summary>The services of the running API, for tests that look at its telemetry providers.</summary>
+    public IServiceProvider Services => _factory.Services;
+
     public HttpClient Anonymous()
     {
         return _factory.CreateClient();
