@@ -1,6 +1,7 @@
 namespace CartService.Api.Carts;
 
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Threading;
 using System.Threading.Tasks;
@@ -39,6 +40,23 @@ internal static class CartEndpoints
             .WithSummary("Returns the active cart of the signed-in customer.")
             .Produces<CartDto>(StatusCodes.Status200OK)
             .ProducesProblems(StatusCodes.Status401Unauthorized, StatusCodes.Status404NotFound)
+            .RequireAuthorization(AuthenticationRegistration.CustomerPolicy)
+            .AddEndpointFilter<RequireRequesterFilter>();
+
+        carts.MapPost("/me/merge", MergeGuestCart)
+            .WithName("MergeGuestCart")
+            .WithSummary("Merges a guest cart into the cart of the signed-in customer.")
+            .WithDescription("Send the bearer token of the customer and, in the X-Cart-Token header, the secret token of the guest cart. "
+                + "Quantities of the same product add up (at most 20), the customer's name and price win for such a product, and the "
+                + "guest cart becomes read-only. If the result would hold more than 50 products, nothing changes and the answer is 422. "
+                + "Repeating the request changes nothing and returns the customer's cart.")
+            .Produces<CartDto>(StatusCodes.Status200OK)
+            .ProducesValidationProblem()
+            .ProducesProblems(
+                StatusCodes.Status401Unauthorized,
+                StatusCodes.Status404NotFound,
+                StatusCodes.Status409Conflict,
+                StatusCodes.Status422UnprocessableEntity)
             .RequireAuthorization(AuthenticationRegistration.CustomerPolicy)
             .AddEndpointFilter<RequireRequesterFilter>();
 
@@ -129,6 +147,28 @@ internal static class CartEndpoints
     {
         Requester requester = RequireRequesterFilter.GetRequester(httpContext);
         CartDto cart = await handler.HandleAsync(requester.CustomerId!.Value, cancellationToken);
+
+        return TypedResults.Ok(cart);
+    }
+
+    private static async Task<IResult> MergeGuestCart(
+        HttpContext httpContext,
+        RequesterResolver requesters,
+        MergeGuestCartHandler handler,
+        CancellationToken cancellationToken)
+    {
+        string? guestTokenHash = requesters.ResolveGuestTokenHash(httpContext);
+
+        if (guestTokenHash is null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                [RequesterResolver.GuestTokenHeader] = new[] { "The header with the secret token of the guest cart is required." },
+            });
+        }
+
+        Requester requester = RequireRequesterFilter.GetRequester(httpContext);
+        CartDto cart = await handler.HandleAsync(requester.CustomerId!.Value, guestTokenHash, cancellationToken);
 
         return TypedResults.Ok(cart);
     }

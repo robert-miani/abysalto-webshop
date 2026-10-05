@@ -40,13 +40,19 @@ internal sealed class RequesterResolver
             return Requester.ForCustomer(customerId);
         }
 
-        string? guestToken = httpContext.Request.Headers[GuestTokenHeader].ToString();
+        string? guestTokenHash = ResolveGuestTokenHash(httpContext);
 
-        if (!string.IsNullOrWhiteSpace(guestToken))
-        {
-            return Requester.ForGuest(_guestTokens.Hash(guestToken));
-        }
+        return guestTokenHash is null ? null : Requester.ForGuest(guestTokenHash);
+    }
 
-        return null;
+    /// <summary>
+    /// Returns the hash of the guest cart token in the request, or null when the request has none. Merging a guest
+    /// cart needs this next to the customer, who is resolved separately.
+    /// </summary>
+    public string? ResolveGuestTokenHash(HttpContext httpContext)
+    {
+        string guestToken = httpContext.Request.Headers[GuestTokenHeader].ToString();
+
+        return string.IsNullOrWhiteSpace(guestToken) ? null : _guestTokens.Hash(guestToken);
     }
 }

@@ -70,6 +70,20 @@ internal sealed class CartOpenApiDocumentTransformer : IOpenApiDocumentTransform
         }
 
         operation.Security ??= new List<OpenApiSecurityRequirement>();
+
+        if (path == "/v1/carts/me/merge")
+        {
+            // Merging needs both at once, in one requirement: the customer who receives the items, and the
+            // secret token of the guest cart that gives them away.
+            operation.Security.Add(new OpenApiSecurityRequirement
+            {
+                [new OpenApiSecuritySchemeReference(BearerScheme, document)] = new List<string>(),
+                [new OpenApiSecuritySchemeReference(CartTokenScheme, document)] = new List<string>(),
+            });
+
+            return;
+        }
+
         operation.Security.Add(Requirement(document, BearerScheme));
 
         if (path != "/v1/carts/me")
