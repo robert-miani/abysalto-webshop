@@ -13,13 +13,16 @@ internal sealed class HandlerEnvironment
     public HandlerEnvironment()
     {
         Carts = new InMemoryCartRepository();
-        UnitOfWork = new FakeUnitOfWork(Carts);
+        Outbox = new FakeOutbox();
+        UnitOfWork = new FakeUnitOfWork(Carts, Outbox);
         Catalog = new FakeProductCatalog();
         GuestTokens = new FakeGuestTokenService();
         Time = new FakeTimeProvider(Start);
     }
 
     public InMemoryCartRepository Carts { get; }
+
+    public FakeOutbox Outbox { get; }
 
     public FakeUnitOfWork UnitOfWork { get; }
 

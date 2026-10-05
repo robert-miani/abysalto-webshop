@@ -8,10 +8,12 @@ using CartService.Application.Abstractions;
 internal sealed class FakeUnitOfWork : IUnitOfWork
 {
     private readonly InMemoryCartRepository _repository;
+    private readonly FakeOutbox _outbox;
 
-    public FakeUnitOfWork(InMemoryCartRepository repository)
+    public FakeUnitOfWork(InMemoryCartRepository repository, FakeOutbox outbox)
     {
         _repository = repository;
+        _outbox = outbox;
     }
 
     public int SaveCount { get; private set; }
@@ -28,6 +30,7 @@ internal sealed class FakeUnitOfWork : IUnitOfWork
         {
             BeforeFailure?.Invoke();
             _repository.Discard();
+            _outbox.Discard();
             Exception failure = FailWith;
             FailWith = null;
 
@@ -35,6 +38,7 @@ internal sealed class FakeUnitOfWork : IUnitOfWork
         }
 
         _repository.Commit();
+        _outbox.Commit();
         SaveCount++;
 
         return Task.CompletedTask;
