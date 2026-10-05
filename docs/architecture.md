@@ -101,6 +101,9 @@ The region names are examples, to be confirmed by latency tests and service avai
 
 ### 3.2 Container view
 
+A **BFF** (Backend for Frontend) is an API built for one channel that gathers the data of a screen from several
+services.
+
 ```mermaid
 flowchart TB
     clients(["Web and mobile clients"])
@@ -197,11 +200,11 @@ All components in the diagram, with their data stores, are described in [section
 | Pricing & Promotions | Final price per customer and channel: price lists, promotions, coupons, VAT | PostgreSQL, Redis | A |
 | Cart | Cart across devices; merges an anonymous cart at login; starts checkout | PostgreSQL, Redis cache | A |
 | Customer | Profile, addresses, consents, B2B company accounts; GDPR export and erasure | PostgreSQL | A |
-| Order | Checkout saga and order lifecycle for all channels | PostgreSQL | B |
+| Order | Checkout saga and order lifecycle for all channels, including shipping status and returns | PostgreSQL | B |
 | Payment | PSP integration: sessions, capture, refunds, webhooks; no card data | PostgreSQL | B |
 | Inventory | Available-to-sell stock and reservations; publishes stock changes | PostgreSQL, Redis | B |
-| Integration Hub | All external integrations behind an anti-corruption layer, one worker per connector | PostgreSQL | B |
-| Notifications | Email, SMS, push messages, and real-time updates to open sessions | PostgreSQL | B |
+| Integration Hub | All external integrations behind an anti-corruption layer (a translation layer that keeps a partner's model out of our services), one worker per connector | PostgreSQL | B |
+| Notifications | Email (including receipts), SMS, push messages, and real-time updates to open sessions | PostgreSQL | B |
 
 **Messaging and real-time infrastructure**
 
@@ -216,8 +219,8 @@ These are shared components, owned jointly by both teams.
 
 The teams are split by **value stream**, so most features need only one team. **Team A (Shopping
 Experience)** owns finding a product, the cart, and the customer account, plus the web and mobile BFFs.
-**Team B (Order & Fulfilment)** owns payment, delivery, receipts, and returns, plus API Management and the
-back-office BFF. Customer identity is not built: Microsoft Entra External ID provides sign-up, sign-in, and MFA.
+**Team B (Order & Fulfilment)** owns checkout, payment, stock, shipping and returns (in the Order service and the
+Integration Hub), and customer messages such as receipts, plus API Management and the back-office BFF. Customer identity is not built: Microsoft Entra External ID provides sign-up, sign-in, and multi-factor authentication (MFA).
 
 ## 5. Component communication
 
@@ -236,7 +239,9 @@ back-office BFF. Customer identity is not built: Microsoft Entra External ID pro
 - **Idempotency**: consumers skip messages they have already processed, and write requests carry an
   `Idempotency-Key`, so a retry never creates a second order.
 - **Dead-letter queue**: a message that still fails after retries is parked and raises an alert.
-- **Contracts**: APIs are versioned (`/v1/...`) and events change only in backward-compatible ways.
+- **Contracts**: APIs are versioned (`/v1/...`) and events change only in backward-compatible ways. Every event
+  uses the CloudEvents envelope (id, type, source, time) and carries the W3C `traceparent`, so consumers skip
+  duplicates by id and one trace follows a checkout through the messages ([section 11](#11-monitoring-and-alerting)).
 
 **Checkout** crosses five services, so it runs as an **orchestrated saga** in the Order service, which stores
 the saga state and runs compensations when a step fails (release the stock, void the payment, reopen the cart).
@@ -330,7 +335,7 @@ Real-time processing has two tiers:
 
 | Actor | Authentication |
 | --- | --- |
-| Web shop customer (SPA in the browser) | Entra External ID with OpenID Connect and PKCE, run by the Web BFF. The Web BFF keeps the tokens on the server; the SPA never sees a token and only gets an `HttpOnly`, `Secure` session cookie. |
+| Web shop customer (SPA in the browser) | Entra External ID with OpenID Connect and PKCE (a protection of the login code flow against stolen codes), run by the Web BFF. The Web BFF keeps the tokens on the server; the SPA never sees a token and only gets an `HttpOnly`, `Secure` session cookie. |
 | Mobile app customer | Entra External ID with PKCE; short-lived access tokens; refresh tokens in the device's secure storage. |
 | B2B partner system | OAuth2 client credentials with a certificate-signed assertion, validated by API Management with per-partner quotas. |
 | Client staff | The client's Entra ID with MFA and conditional access. |
@@ -343,7 +348,7 @@ Real-time processing has two tiers:
   Content Security Policy and security headers (for example HSTS) limit XSS, and the static files contain no
   secrets, because everything in them is public.
 - **Payments.** Customers enter card data only on the PSP's hosted payment page. The platform stores only PSP
-  references, which keeps it in the smallest PCI DSS scope (SAQ A). The PSP runs 3-D Secure.
+  references, which keeps it in the smallest PCI DSS scope (SAQ A, the shortest self-assessment questionnaire). The PSP runs 3-D Secure.
 - **Data protection.** TLS everywhere, encryption at rest, private endpoints for all data stores, outbound
   traffic through Azure Firewall, and secrets only in Azure Key Vault. All data stays in EU regions. The
   Customer service records consents and runs GDPR erasure across all services.
@@ -438,7 +443,8 @@ flowchart LR
   staging and production is a reviewed pull request and CI needs no cluster credentials.
 - **Canary releases**: new versions get 5%, then 25%, 50%, and 100% of traffic, with automatic rollback if errors
   or latency increase.
-- **Database migrations** use expand and contract, so the running version always works with the schema.
+- **Database migrations** use expand and contract (first add the new column, then switch the code to it, then remove
+  the old column), so the running version always works with the schema.
 - **Environments**: `dev`, `staging`, and `prod`, with separate subscriptions and credentials.
 
 ## 13. Key decisions
