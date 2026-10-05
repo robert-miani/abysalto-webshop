@@ -28,6 +28,7 @@ It is under construction; this section grows with each pull request.
 
 - .NET 10 SDK (see `global.json`)
 - Docker (the integration tests start PostgreSQL and the Azure Service Bus emulator with Testcontainers)
+- About 3 GB of free memory for Docker: the Service Bus emulator needs a SQL Server
 
 ### Run with Docker Compose
 
@@ -35,9 +36,11 @@ It is under construction; this section grows with each pull request.
 docker compose up --build
 ```
 
-This starts PostgreSQL 17 and the API in the Development environment. The API applies the database
-migrations when it starts and answers on http://localhost:8080. Stop and remove everything, including the
-database volume, with `docker compose down -v`.
+This starts PostgreSQL 17, the Azure Service Bus emulator (with its SQL Server), and the API in the
+Development environment. The API applies the database migrations when it starts and answers on
+http://localhost:8080. The first start downloads about 2 GB of images, and the emulator needs up to a minute
+to become ready; the relay keeps retrying until it is. Stop and remove everything, including the database
+volume, with `docker compose down -v`.
 
 On the very first start the log shows one `fail:` entry for `SELECT ... FROM "__EFMigrationsHistory"`. That is
 Entity Framework Core checking its history table in a new database, just before it creates the table. It is
@@ -58,6 +61,14 @@ TOKEN=$(curl -s -X POST http://localhost:8080/dev/token -H "Content-Type: applic
 curl -s -X POST http://localhost:8080/v1/carts -H "Authorization: Bearer $TOKEN"
 curl -s -X POST http://localhost:8080/v1/carts/<cart id>/items -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{"productId":"tee-blue-m","quantity":2}'
+curl -s -X POST http://localhost:8080/v1/carts/<cart id>/checkout -H "Authorization: Bearer $TOKEN"
+```
+
+After the checkout, see that the event was published and the outbox row is processed:
+
+```bash
+docker compose logs api | grep Published
+docker compose exec postgres psql -U cart -d cartservice -c "SELECT type, attempts, processed_at FROM outbox_messages"
 ```
 
 **As a guest.** `POST /v1/carts` without a token creates a guest cart and returns a `guestToken` once. Send it
@@ -76,11 +87,48 @@ The sample products are `tee-blue-m`, `tee-blue-l`, `hoodie-grey-m`, `cap-red`, 
 | `POST /v1/carts/{cartId}/items` | Owner | Adds a product; the name and price come from the catalog |
 | `PUT /v1/carts/{cartId}/items/{productId}` | Owner | Sets the quantity |
 | `DELETE /v1/carts/{cartId}/items/{productId}` | Owner | 204, also when the product is not in the cart |
+| `POST /v1/carts/{cartId}/checkout` | Customer who owns the cart | 202 with the `checkoutId`; the cart becomes read-only and the `CartCheckedOut` event is published. Repeating it returns the same id |
 | `POST /dev/token` | Anyone, Development only | A token for a customer id |
 | `GET /health/live` | Anyone | Liveness |
 
-Merging a guest cart into a customer cart and checkout (which publishes the event that starts an order) are the
-next steps and are not implemented yet.
+Merging a guest cart into a customer cart is the next step and is not implemented yet.
+
+### Checkout and the outbox
+
+Checkout must tell the Order service, and it must do so exactly when the checkout really happened. Writing to
+the database and publishing to a message broker cannot share one transaction, so the service uses the
+**transactional outbox** pattern:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as Cart API
+    participant DB as PostgreSQL
+    participant Relay as Outbox relay
+    participant SB as Service Bus topic cart-events
+    participant Order as Order service (consumer)
+
+    Client->>API: POST /v1/carts/{id}/checkout
+    API->>DB: One transaction: cart becomes CheckoutPending, CartCheckedOut stored in outbox_messages
+    API-->>Client: 202 Accepted, checkoutId
+    loop every 2 seconds
+        Relay->>DB: Claim unprocessed messages with a lease
+        Relay->>SB: Publish CloudEvent (message id = event id, session = checkout id)
+        Relay->>DB: Mark as processed
+    end
+    SB-->>Order: Deliver in order, per checkout session
+```
+
+| Question | Answer |
+| --- | --- |
+| Can an event exist for a checkout that did not happen? | No. The event is written in the same transaction as the cart change; if the save fails, neither exists |
+| Can a checkout lose its event? | No. If the broker is down, the message stays in the table and is retried with a growing delay, up to 10 attempts, then it stays with its error and an error log |
+| Can an event be published twice? | Yes, rarely: if the relay stops after publishing but before it marks the message. The message id is the event id, so the broker drops duplicates within its window, and consumers skip event ids they have seen (at-least-once delivery) |
+| Can two relays publish the same message? | No. A relay claims a message with a lease (`FOR UPDATE SKIP LOCKED`); a relay that dies loses its messages when the lease expires |
+| In which order are events handled? | All events of one checkout share a Service Bus session (the checkout id), so one consumer handles them in order |
+
+The event is a CloudEvents 1.0 document in structured JSON mode; see `CartCheckedOut` in
+`src/CartService.Application/Events` and the end-to-end test `CheckoutEventEndToEndTests`.
 
 ### Authentication
 
@@ -90,6 +138,8 @@ next steps and are not implemented yet.
 | Guest | The `X-Cart-Token` header. The token is 256 random bits, shown once; only its SHA-256 hash is stored |
 
 The service refuses to start in production without an authority, and refuses a development signing key there.
+In production the service also reaches Service Bus with its workload identity (`ServiceBus:FullyQualifiedNamespace`),
+so no connection string or secret is needed.
 
 ### Business rules and error codes
 
@@ -102,17 +152,17 @@ cart. Errors are RFC 7807 problem details with a stable `code`:
 | 401 | No valid bearer token or cart token | |
 | 404 | The cart does not exist or belongs to somebody else | `cart.not_found` |
 | 409 | Two requests changed the same cart at once; read it again and retry | `cart.concurrency_conflict` |
-| 422 | A business rule is broken | `cart.product_not_found`, `cart.quantity_out_of_range`, `cart.item_limit_exceeded`, `cart.item_not_found`, `cart.not_active` |
+| 422 | A business rule is broken | `cart.product_not_found`, `cart.quantity_out_of_range`, `cart.item_limit_exceeded`, `cart.item_not_found`, `cart.not_active`, `cart.empty`, `cart.checkout_requires_customer` |
 
 ### Run the API from the command line
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres servicebus-emulator
 dotnet run --project src/CartService.Api
 ```
 
-The API listens on http://localhost:5080 and uses the connection string in
-`src/CartService.Api/appsettings.Development.json`, which points to the PostgreSQL container above.
+The API listens on http://localhost:5080 and uses the connection strings in
+`src/CartService.Api/appsettings.Development.json`, which point to the containers above.
 
 ### Build and test
 
@@ -121,14 +171,14 @@ dotnet build CartService.slnx
 dotnet test --solution CartService.slnx
 ```
 
-The integration tests need Docker. They start a PostgreSQL container, apply the real migrations to it, run the
-API in memory against it, and remove the container when the tests finish.
+The integration tests need Docker. They start PostgreSQL and the Service Bus emulator, apply the real migrations,
+run the API in memory against them, and remove the containers when the tests finish.
 
 ### Database and migrations
 
 | Topic | Decision |
 | --- | --- |
-| Schema | `carts` and `cart_items`, created by Entity Framework Core migrations in `src/CartService.Infrastructure/Persistence/Migrations` |
+| Schema | `carts`, `cart_items`, and `outbox_messages`, created by Entity Framework Core migrations in `src/CartService.Infrastructure/Persistence/Migrations` |
 | Integrity in the database | One owner per cart, quantity between 1 and 20, and one active cart per customer (partial unique index) |
 | Concurrent changes | Every change increments the cart version; a write based on an old version is rejected and becomes HTTP 409 |
 | Applying migrations | `Database:ApplyMigrationsOnStartup` is on for Docker Compose and local runs, and off by default so that production applies migrations in the delivery pipeline |
@@ -145,10 +195,10 @@ dotnet dotnet-ef migrations add <Name> --project src/CartService.Infrastructure 
 | Project | Responsibility |
 | --- | --- |
 | `src/CartService.Domain` | Cart aggregate and business rules, no dependencies |
-| `src/CartService.Application` | Use cases (one handler per use case) and ports |
-| `src/CartService.Infrastructure` | PostgreSQL, product catalog stand-in, guest tokens; later Redis, outbox, Service Bus |
+| `src/CartService.Application` | Use cases (one handler per use case), integration events, and ports |
+| `src/CartService.Infrastructure` | PostgreSQL, outbox and relay, Service Bus publisher, product catalog stand-in, guest tokens; later Redis |
 | `src/CartService.Api` | Host, Minimal API endpoints, authentication, OpenAPI, health checks |
 | `tests/CartService.Domain.Tests` | Unit tests of the business rules |
 | `tests/CartService.Application.Tests` | Unit tests of the handlers, with in-memory fakes |
 | `tests/CartService.Architecture.Tests` | Enforces the allowed dependencies between layers |
-| `tests/CartService.Api.IntegrationTests` | The API over HTTP against real containers: PostgreSQL, Service Bus emulator |
+| `tests/CartService.Api.IntegrationTests` | The API over HTTP against real containers: PostgreSQL and the Service Bus emulator |
