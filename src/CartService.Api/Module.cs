@@ -1,10 +1,14 @@
 namespace CartService.Api;
 
 using System;
+using System.Text.Json.Serialization;
 using CartService.Api.Authentication;
+using CartService.Api.Carts;
 using CartService.Api.ErrorHandling;
 using CartService.Api.Health;
+using CartService.Api.Requesters;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -19,6 +23,10 @@ internal static class Module
         services.AddExceptionHandler<GlobalExceptionHandler>();
         services.AddHealthChecks();
         services.AddCartAuthentication();
+        services.AddSingleton<RequesterResolver>();
+
+        // The cart status is sent as text ("Active"), not as a number.
+        services.Configure<JsonOptions>(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
         return services;
     }
@@ -31,6 +39,7 @@ internal static class Module
         app.UseAuthorization();
 
         app.MapHealthEndpoints();
+        app.MapCartEndpoints();
 
         if (app.Environment.IsDevelopment())
         {
