@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using CartService.Api.Authentication;
 using CartService.Api.Idempotency;
+using CartService.Api.RateLimiting;
 using CartService.Api.Requesters;
 using CartService.Application.Carts;
 using Microsoft.AspNetCore.Builder;
@@ -17,7 +18,10 @@ internal static class CartEndpoints
 {
     public static IEndpointRouteBuilder MapCartEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        RouteGroupBuilder carts = endpoints.MapGroup("/v1/carts").WithTags("Carts");
+        RouteGroupBuilder carts = endpoints.MapGroup("/v1/carts")
+            .WithTags("Carts")
+            .RequireRateLimiting(RateLimitingRegistration.DefaultPolicy)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         // A cart is personal data and must never be stored by a cache.
         carts.AddEndpointFilter(async (context, next) =>
@@ -34,6 +38,7 @@ internal static class CartEndpoints
                 + "Without a token, a guest cart is created and 201 returns the cart together with its secret guestToken, which is shown only once.")
             .Produces<GuestCartCreatedResponse>(StatusCodes.Status201Created)
             .Produces<CartDto>(StatusCodes.Status200OK)
+            .RequireRateLimiting(RateLimitingRegistration.StrictPolicy)
             .AllowAnonymous();
 
         carts.MapGet("/me", GetMyCart)
@@ -122,6 +127,7 @@ internal static class CartEndpoints
                 StatusCodes.Status404NotFound,
                 StatusCodes.Status409Conflict,
                 StatusCodes.Status422UnprocessableEntity)
+            .RequireRateLimiting(RateLimitingRegistration.StrictPolicy)
             .AddEndpointFilter<RequireRequesterFilter>();
 
         return endpoints;

@@ -80,7 +80,7 @@ public sealed class OpenApiDocumentTests
 
         string[] responses = paths.GetProperty("/v1/carts/{cartId}/items").GetProperty("post").GetProperty("responses")
             .EnumerateObject().Select(property => property.Name).Order().ToArray();
-        responses.ShouldBe(new[] { "200", "400", "401", "404", "409", "422" });
+        responses.ShouldBe(new[] { "200", "400", "401", "404", "409", "422", "429" });
     }
 
     [Fact]

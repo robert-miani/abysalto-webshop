@@ -7,6 +7,7 @@ using CartService.Api.Carts;
 using CartService.Api.ErrorHandling;
 using CartService.Api.Health;
 using CartService.Api.OpenApi;
+using CartService.Api.RateLimiting;
 using CartService.Api.Requesters;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http.Json;
@@ -25,6 +26,7 @@ internal static class Module
         services.AddExceptionHandler<GlobalExceptionHandler>();
         services.AddHealthChecks();
         services.AddCartAuthentication();
+        services.AddCartRateLimiting();
         services.AddSingleton<RequesterResolver>();
         services.AddCartOpenApi();
 
@@ -40,6 +42,7 @@ internal static class Module
         app.UseStatusCodePages();
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseRateLimiter();
 
         app.MapHealthEndpoints();
         app.MapCartEndpoints();
