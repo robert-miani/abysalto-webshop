@@ -35,4 +35,11 @@ public sealed class OutboxOptions
     /// <summary>The wait before a failed message is tried again. It grows with every attempt.</summary>
     [Range(typeof(TimeSpan), "00:00:00.100", "00:10:00")]
     public TimeSpan RetryDelay { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// When the oldest message has waited this long, the readiness check reports the service as degraded, because
+    /// events are not reaching Service Bus.
+    /// </summary>
+    [Range(typeof(TimeSpan), "00:00:05", "1.00:00:00")]
+    public TimeSpan DegradedAfter { get; init; } = TimeSpan.FromMinutes(1);
 }
