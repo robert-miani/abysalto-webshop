@@ -20,6 +20,7 @@ internal static class Module
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.AddProblemDetails();
+        services.AddValidation();
         services.AddExceptionHandler<GlobalExceptionHandler>();
         services.AddHealthChecks();
         services.AddCartAuthentication();

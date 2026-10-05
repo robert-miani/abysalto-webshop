@@ -1,6 +1,7 @@
 namespace CartService.Api.Carts;
 
 using System;
+using System.ComponentModel.DataAnnotations;
 using System.Threading;
 using System.Threading.Tasks;
 using CartService.Api.Authentication;
@@ -38,6 +39,21 @@ internal static class CartEndpoints
         carts.MapGet("/{cartId:guid}", GetCart)
             .WithName("GetCart")
             .WithSummary("Returns a cart of the customer or the guest.")
+            .AddEndpointFilter<RequireRequesterFilter>();
+
+        carts.MapPost("/{cartId:guid}/items", AddItem)
+            .WithName("AddItem")
+            .WithSummary("Adds a product to the cart. The price comes from the catalog.")
+            .AddEndpointFilter<RequireRequesterFilter>();
+
+        carts.MapPut("/{cartId:guid}/items/{productId}", ChangeQuantity)
+            .WithName("ChangeItemQuantity")
+            .WithSummary("Sets the quantity of a product in the cart.")
+            .AddEndpointFilter<RequireRequesterFilter>();
+
+        carts.MapDelete("/{cartId:guid}/items/{productId}", RemoveItem)
+            .WithName("RemoveItem")
+            .WithSummary("Removes a product from the cart. Removing a product that is not there is not an error.")
             .AddEndpointFilter<RequireRequesterFilter>();
 
         return endpoints;
@@ -83,5 +99,45 @@ internal static class CartEndpoints
         CartDto cart = await handler.HandleAsync(cartId, requester, cancellationToken);
 
         return TypedResults.Ok(cart);
+    }
+
+    private static async Task<IResult> AddItem(
+        Guid cartId,
+        AddItemRequest request,
+        HttpContext httpContext,
+        AddItemHandler handler,
+        CancellationToken cancellationToken)
+    {
+        Requester requester = RequireRequesterFilter.GetRequester(httpContext);
+        CartDto cart = await handler.HandleAsync(cartId, requester, request.ProductId, request.Quantity, cancellationToken);
+
+        return TypedResults.Ok(cart);
+    }
+
+    private static async Task<IResult> ChangeQuantity(
+        Guid cartId,
+        [StringLength(64, MinimumLength = 1)] string productId,
+        ChangeQuantityRequest request,
+        HttpContext httpContext,
+        ChangeItemQuantityHandler handler,
+        CancellationToken cancellationToken)
+    {
+        Requester requester = RequireRequesterFilter.GetRequester(httpContext);
+        CartDto cart = await handler.HandleAsync(cartId, requester, productId, request.Quantity, cancellationToken);
+
+        return TypedResults.Ok(cart);
+    }
+
+    private static async Task<IResult> RemoveItem(
+        Guid cartId,
+        [StringLength(64, MinimumLength = 1)] string productId,
+        HttpContext httpContext,
+        RemoveItemHandler handler,
+        CancellationToken cancellationToken)
+    {
+        Requester requester = RequireRequesterFilter.GetRequester(httpContext);
+        await handler.HandleAsync(cartId, requester, productId, cancellationToken);
+
+        return TypedResults.NoContent();
     }
 }
