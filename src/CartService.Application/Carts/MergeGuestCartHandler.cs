@@ -57,6 +57,7 @@ public sealed class MergeGuestCartHandler
         // Both carts changed: the guest cart is now read-only and the customer cart has the items.
         await _cache.RemoveAsync(guestCart, cancellationToken);
         await _cache.RemoveAsync(customerCart, cancellationToken);
+        CartTelemetry.Merges.Add(1);
 
         return CartDto.From(customerCart);
     }

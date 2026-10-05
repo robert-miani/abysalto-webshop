@@ -66,6 +66,7 @@ public sealed class CheckoutHandler
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
         await _cache.RemoveAsync(cart, cancellationToken);
+        CartTelemetry.Checkouts.Add(1);
 
         return new CheckoutResult { CheckoutId = checkoutId };
     }
