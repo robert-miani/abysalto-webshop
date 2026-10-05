@@ -14,6 +14,11 @@ public sealed class Cart
 {
     private readonly List<CartItem> _items = new List<CartItem>();
 
+    // Used by Entity Framework Core to rebuild a cart from the database. Not part of the domain model.
+    private Cart()
+    {
+    }
+
     private Cart(Guid id, Guid? customerId, string? guestTokenHash, DateTimeOffset now)
     {
         Id = id;
