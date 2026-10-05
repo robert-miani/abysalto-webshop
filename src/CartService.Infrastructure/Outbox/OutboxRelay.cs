@@ -58,7 +58,9 @@ internal sealed class OutboxRelay : BackgroundService
 
         foreach (ClaimedMessage message in batch)
         {
-            using Activity? activity = CartTelemetry.ActivitySource.StartActivity($"{message.Type} publish", ActivityKind.Producer);
+            // The span joins the trace of the request that wrote the event, if the event carries one.
+            ActivityContext parent = OutboxTraceContext.TryRead(message.Payload, out ActivityContext carried) ? carried : default;
+            using Activity? activity = CartTelemetry.ActivitySource.StartActivity($"{message.Type} publish", ActivityKind.Producer, parent);
             activity?.SetTag("messaging.system", "servicebus");
             activity?.SetTag("messaging.message.id", message.Id);
             activity?.SetTag("messaging.outbox.attempt", message.Attempt);

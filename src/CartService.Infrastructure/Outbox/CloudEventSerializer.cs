@@ -1,6 +1,7 @@
 namespace CartService.Infrastructure.Outbox;
 
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using CartService.Application.Events;
@@ -28,6 +29,17 @@ internal static class CloudEventSerializer
             ["datacontenttype"] = "application/json",
             ["data"] = JsonSerializer.SerializeToElement(integrationEvent, integrationEvent.GetType(), Options),
         };
+
+        // The event is written during the request that causes it, so the current activity is that request.
+        if (Activity.Current is { IdFormat: ActivityIdFormat.W3C, Id: not null } activity)
+        {
+            envelope[OutboxTraceContext.TraceParentAttribute] = activity.Id;
+
+            if (!string.IsNullOrEmpty(activity.TraceStateString))
+            {
+                envelope[OutboxTraceContext.TraceStateAttribute] = activity.TraceStateString;
+            }
+        }
 
         return JsonSerializer.Serialize(envelope, Options);
     }
