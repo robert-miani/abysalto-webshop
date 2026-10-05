@@ -26,6 +26,7 @@ public static class Module
 
         services.AddScoped<ICartRepository, CartRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+        services.AddHostedService<DatabaseMigrationService>();
 
         return services;
     }
