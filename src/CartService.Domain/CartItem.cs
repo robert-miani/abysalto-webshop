@@ -28,4 +28,16 @@ public sealed class CartItem
     public int Quantity { get; private set; }
 
     public Money LineTotal => UnitPrice.Multiply(Quantity);
+
+    internal void Update(string productName, Money unitPrice, int quantity)
+    {
+        ProductName = productName;
+        UnitPrice = unitPrice;
+        Quantity = quantity;
+    }
+
+    internal void SetQuantity(int quantity)
+    {
+        Quantity = quantity;
+    }
 }

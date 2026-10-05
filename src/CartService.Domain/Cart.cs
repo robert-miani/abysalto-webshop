@@ -76,6 +76,74 @@ public sealed class Cart
         return new Cart(Guid.CreateVersion7(), null, guestTokenHash, now);
     }
 
+    /// <summary>
+    /// Adds units of a product. When the product is already in the cart, the quantities are added and the line
+    /// takes the name and price that were just read from the catalog.
+    /// </summary>
+    public void AddItem(string productId, string productName, Money unitPrice, int quantity, DateTimeOffset now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(productId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(productName);
+        ArgumentNullException.ThrowIfNull(unitPrice);
+        EnsureEuro(unitPrice);
+        EnsureActive();
+        EnsureValidQuantity(quantity);
+
+        CartItem? existing = Find(productId);
+
+        if (existing is null)
+        {
+            if (_items.Count >= CartLimits.MaxDistinctItems)
+            {
+                throw new CartRuleViolationException(
+                    CartErrorCodes.ItemLimitExceeded,
+                    $"A cart can hold at most {CartLimits.MaxDistinctItems} different products.");
+            }
+
+            _items.Add(new CartItem(productId, productName, unitPrice, quantity));
+        }
+        else
+        {
+            int newQuantity = existing.Quantity + quantity;
+            EnsureValidQuantity(newQuantity);
+            existing.Update(productName, unitPrice, newQuantity);
+        }
+
+        Touch(now);
+    }
+
+    public void ChangeQuantity(string productId, int quantity, DateTimeOffset now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(productId);
+        EnsureActive();
+        EnsureValidQuantity(quantity);
+
+        CartItem item = Find(productId)
+            ?? throw new CartRuleViolationException(CartErrorCodes.ItemNotFound, $"Product '{productId}' is not in the cart.");
+
+        item.SetQuantity(quantity);
+        Touch(now);
+    }
+
+    /// <summary>
+    /// Removes a product. Removing a product that is not in the cart changes nothing.
+    /// </summary>
+    public void RemoveItem(string productId, DateTimeOffset now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(productId);
+        EnsureActive();
+
+        CartItem? item = Find(productId);
+
+        if (item is null)
+        {
+            return;
+        }
+
+        _items.Remove(item);
+        Touch(now);
+    }
+
     public bool IsOwnedByCustomer(Guid customerId)
     {
         return CustomerId.HasValue && CustomerId.Value == customerId;
@@ -91,5 +159,42 @@ public sealed class Cart
         return CryptographicOperations.FixedTimeEquals(
             Encoding.UTF8.GetBytes(GuestTokenHash),
             Encoding.UTF8.GetBytes(guestTokenHash));
+    }
+
+    private static void EnsureValidQuantity(int quantity)
+    {
+        if (quantity < 1 || quantity > CartLimits.MaxQuantityPerItem)
+        {
+            throw new CartRuleViolationException(
+                CartErrorCodes.QuantityOutOfRange,
+                $"The quantity of a product must be between 1 and {CartLimits.MaxQuantityPerItem}.");
+        }
+    }
+
+    private static void EnsureEuro(Money price)
+    {
+        if (!string.Equals(price.Currency, Money.Euro, StringComparison.Ordinal))
+        {
+            throw new ArgumentException($"Prices must be in {Money.Euro}.", nameof(price));
+        }
+    }
+
+    private CartItem? Find(string productId)
+    {
+        return _items.Find(item => string.Equals(item.ProductId, productId, StringComparison.Ordinal));
+    }
+
+    private void EnsureActive()
+    {
+        if (Status != CartStatus.Active)
+        {
+            throw new CartRuleViolationException(CartErrorCodes.NotActive, "Only an active cart can be changed.");
+        }
+    }
+
+    private void Touch(DateTimeOffset now)
+    {
+        UpdatedAt = now;
+        Version++;
     }
 }
