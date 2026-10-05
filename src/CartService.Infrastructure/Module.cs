@@ -2,6 +2,7 @@ namespace CartService.Infrastructure;
 
 using System;
 using CartService.Application.Abstractions;
+using CartService.Infrastructure.Catalog;
 using CartService.Infrastructure.Guests;
 using CartService.Infrastructure.Persistence;
 using Microsoft.Extensions.Configuration;
@@ -25,6 +26,13 @@ public static class Module
             options.UseCartDatabase(database.ConnectionString);
         });
 
+        services.AddOptions<ProductCatalogOptions>()
+            .BindConfiguration(ProductCatalogOptions.SectionName)
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<ProductCatalogOptions>, ProductCatalogOptionsValidator>();
+
+        services.AddSingleton<IProductCatalog, ConfiguredProductCatalog>();
         services.AddSingleton<IGuestTokenService, GuestTokenService>();
 
         services.AddScoped<ICartRepository, CartRepository>();
