@@ -4,6 +4,7 @@ using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using CartService.Api.IntegrationTests.Persistence;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 
 /// <summary>
@@ -15,11 +16,15 @@ internal sealed class TestApi : IDisposable
     private readonly CartApiFactory _baseFactory;
     private readonly WebApplicationFactory<Program> _factory;
 
-    public TestApi(PostgresFixture postgres)
+    public TestApi(PostgresFixture postgres, string environment = "Testing")
     {
         _baseFactory = new CartApiFactory();
         _factory = _baseFactory.WithWebHostBuilder(builder =>
         {
+            builder.UseEnvironment(environment);
+
+            // The settings of the Development environment point to a local database, so tests always pass
+            // the container explicitly.
             builder.UseSetting("Database:ConnectionString", postgres.ConnectionString);
             builder.UseSetting("Database:ApplyMigrationsOnStartup", "true");
         });
