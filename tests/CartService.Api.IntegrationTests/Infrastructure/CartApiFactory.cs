@@ -19,6 +19,9 @@ public sealed class CartApiFactory : WebApplicationFactory<Program>
         // Most tests do not need a message broker, so the relay is off. A test that does need it turns it on.
         builder.UseSetting("Outbox:Enabled", "false");
 
+        // The cleanup job deletes by age and is tested on its own.
+        builder.UseSetting("Cleanup:Enabled", "false");
+
         // The Development settings point to a Redis on localhost. Tests have no cache unless they ask for one.
         builder.UseSetting("Cache:ConnectionString", string.Empty);
 

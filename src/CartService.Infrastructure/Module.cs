@@ -4,6 +4,7 @@ using System;
 using CartService.Application.Abstractions;
 using CartService.Infrastructure.Caching;
 using CartService.Infrastructure.Catalog;
+using CartService.Infrastructure.Cleanup;
 using CartService.Infrastructure.Guests;
 using CartService.Infrastructure.Health;
 using CartService.Infrastructure.Idempotency;
@@ -65,9 +66,16 @@ public static class Module
             .ValidateOnStart();
         services.AddScoped<IIdempotencyStore, IdempotencyStore>();
 
+        services.AddOptions<CleanupOptions>()
+            .BindConfiguration(CleanupOptions.SectionName)
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddScoped<CleanupStore>();
+
         // Hosted services start in the order of registration: the schema must exist before the relay looks at it.
         services.AddHostedService<DatabaseMigrationService>();
         services.AddHostedService<OutboxRelay>();
+        services.AddHostedService<CleanupService>();
 
         return services;
     }
