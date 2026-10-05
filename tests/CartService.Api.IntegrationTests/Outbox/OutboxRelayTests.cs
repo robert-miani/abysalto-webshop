@@ -68,6 +68,35 @@ public sealed class OutboxRelayTests
     }
 
     [Fact]
+    public async Task TheSpanJoinsTheTraceOfTheRequestThatWroteTheEvent()
+    {
+        await using RelayHarness harness = await RelayHarness.CreateWithNewDatabaseAsync(_postgres);
+        Guid id = await harness.SeedAsync(
+            Start,
+            payload: "{\"specversion\":\"1.0\",\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}");
+        using SpanRecorder spans = new SpanRecorder(id);
+
+        await harness.Relay.ProcessBatchAsync(Token);
+
+        Activity span = spans.Stopped.ShouldHaveSingleItem();
+        span.TraceId.ToString().ShouldBe("0af7651916cd43dd8448eb211c80319c");
+        span.ParentSpanId.ToString().ShouldBe("b7ad6b7169203331");
+    }
+
+    [Fact]
+    public async Task AMessageWithoutATraceStartsATraceOfItsOwn()
+    {
+        await using RelayHarness harness = await RelayHarness.CreateWithNewDatabaseAsync(_postgres);
+        Guid id = await harness.SeedAsync(Start);
+        using SpanRecorder spans = new SpanRecorder(id);
+
+        await harness.Relay.ProcessBatchAsync(Token);
+
+        Activity span = spans.Stopped.ShouldHaveSingleItem();
+        span.ParentSpanId.ToString().ShouldBe("0000000000000000");
+    }
+
+    [Fact]
     public async Task AFailedPublishMarksTheSpanAsAnError()
     {
         await using RelayHarness harness = await RelayHarness.CreateWithNewDatabaseAsync(_postgres);

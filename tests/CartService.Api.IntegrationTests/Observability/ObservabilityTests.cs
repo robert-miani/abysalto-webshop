@@ -6,12 +6,15 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using CartService.Api.IntegrationTests.Infrastructure;
 using CartService.Api.IntegrationTests.Persistence;
 using CartService.Application.Carts;
+using CartService.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
@@ -25,10 +28,12 @@ public sealed class ObservabilityTests : IDisposable
 {
     private readonly List<Activity> _spans = new List<Activity>();
     private readonly List<Metric> _metrics = new List<Metric>();
+    private readonly PostgresFixture _postgres;
     private readonly TestApi _api;
 
     public ObservabilityTests(PostgresFixture postgres)
     {
+        _postgres = postgres;
         _api = new TestApi(postgres, configure: UseInMemoryExporters);
     }
 
@@ -105,6 +110,22 @@ public sealed class ObservabilityTests : IDisposable
     }
 
     [Fact]
+    public async Task TheTraceOfACheckoutContinuesInTheEventForTheOrderService()
+    {
+        using HttpClient client = _api.Customer(Guid.NewGuid());
+        CartDto cart = (await (await client.PostAsync("/v1/carts", content: null, Token)).Content.ReadFromJsonAsync<CartDto>(TestJson.Options, Token))!;
+        await client.PostAsJsonAsync($"/v1/carts/{cart.Id}/items", new { productId = "cap-red", quantity = 1 }, Token);
+
+        await client.PostAsync($"/v1/carts/{cart.Id}/checkout", content: null, Token);
+
+        Activity server = SpansOf("Microsoft.AspNetCore").Single(span => span.DisplayName.EndsWith("/checkout", StringComparison.Ordinal));
+        string payload = await ReadEventPayloadAsync(cart.Id);
+        JsonElement envelope = JsonSerializer.Deserialize<JsonElement>(payload);
+        ActivityContext.TryParse(envelope.GetProperty("traceparent").GetString(), null, out ActivityContext carried).ShouldBeTrue();
+        carried.TraceId.ShouldBe(server.TraceId);
+    }
+
+    [Fact]
     public async Task TheCartMetricsAreExported()
     {
         using HttpClient client = _api.Customer(Guid.NewGuid());
@@ -131,6 +152,15 @@ public sealed class ObservabilityTests : IDisposable
             services.ConfigureOpenTelemetryTracerProvider((_, tracing) => tracing.AddInMemoryExporter(_spans));
             services.ConfigureOpenTelemetryMeterProvider((_, metrics) => metrics.AddInMemoryExporter(_metrics));
         });
+    }
+
+    private async Task<string> ReadEventPayloadAsync(Guid cartId)
+    {
+        await using CartDbContext context = _postgres.CreateContext();
+
+        return await context.Database
+            .SqlQuery<string>($"SELECT payload::text AS \"Value\" FROM outbox_messages WHERE payload->'data'->>'cartId' = {cartId.ToString()}")
+            .SingleAsync(Token);
     }
 
     private Activity[] SpansOf(string sourceName)
