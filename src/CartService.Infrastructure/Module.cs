@@ -39,7 +39,7 @@ public static class Module
         services.AddSingleton<IProductCatalog, ConfiguredProductCatalog>();
         services.AddSingleton<IGuestTokenService, GuestTokenService>();
 
-        services.AddSingleton<ICartCache, NullCartCache>();
+        services.AddCartCache();
         services.AddScoped<ICartRepository, CartRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped<IOutbox, OutboxWriter>();
