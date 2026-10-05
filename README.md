@@ -5,7 +5,7 @@ This repository contains the solution to the Abysalto Senior Backend Developer t
 | Part | Location | Status |
 | --- | --- | --- |
 | High-level architecture and implementation strategy for a multi-channel retail platform (EU market, Croatia first) | [docs/architecture.md](docs/architecture.md) | Complete |
-| Cart Web API (reference implementation of one service from the architecture) | `src/` | Not started |
+| Cart Web API (reference implementation of one service from the architecture) | `src/` | In progress |
 
 ## Architecture document
 
@@ -27,7 +27,31 @@ It is under construction; this section grows with each pull request.
 ### Prerequisites
 
 - .NET 10 SDK (see `global.json`)
-- Docker (the integration tests start PostgreSQL, Redis, and the Azure Service Bus emulator with Testcontainers)
+- Docker (the integration tests start PostgreSQL and the Azure Service Bus emulator with Testcontainers)
+
+### Run with Docker Compose
+
+```bash
+docker compose up --build
+```
+
+This starts PostgreSQL 17 and the API. The API applies the database migrations when it starts and answers on
+http://localhost:8080. Check it with http://localhost:8080/health/live. Stop and remove everything, including
+the database volume, with `docker compose down -v`.
+
+On the very first start the log shows one `fail:` entry for `SELECT ... FROM "__EFMigrationsHistory"`. That is
+Entity Framework Core checking its history table in a new database, just before it creates the table. It is
+expected and not an error of the service.
+
+### Run the API from the command line
+
+```bash
+docker compose up -d postgres
+dotnet run --project src/CartService.Api
+```
+
+The API listens on http://localhost:5080 and uses the connection string in
+`src/CartService.Api/appsettings.Development.json`, which points to the PostgreSQL container above.
 
 ### Build and test
 
@@ -36,13 +60,24 @@ dotnet build CartService.slnx
 dotnet test --solution CartService.slnx
 ```
 
-### Run locally
+The integration tests need Docker. They start a PostgreSQL container, apply the real migrations to it, and
+remove it when the tests finish.
+
+### Database and migrations
+
+| Topic | Decision |
+| --- | --- |
+| Schema | `carts` and `cart_items`, created by Entity Framework Core migrations in `src/CartService.Infrastructure/Persistence/Migrations` |
+| Integrity in the database | One owner per cart, quantity between 1 and 20, and one active cart per customer (partial unique index) |
+| Concurrent changes | Every change increments the cart version; a write based on an old version is rejected and becomes HTTP 409 |
+| Applying migrations | `Database:ApplyMigrationsOnStartup` is on for Docker Compose and local runs, and off by default so that production applies migrations in the delivery pipeline |
+
+Create a new migration after a model change:
 
 ```bash
-dotnet run --project src/CartService.Api
+dotnet tool restore
+dotnet dotnet-ef migrations add <Name> --project src/CartService.Infrastructure --output-dir Persistence/Migrations
 ```
-
-The liveness endpoint is at http://localhost:5080/health/live.
 
 ### Solution structure
 
@@ -52,5 +87,6 @@ The liveness endpoint is at http://localhost:5080/health/live.
 | `src/CartService.Application` | Use cases (command and query handlers) and ports |
 | `src/CartService.Infrastructure` | PostgreSQL, Redis, outbox relay, Azure Service Bus |
 | `src/CartService.Api` | Host, Minimal API endpoints, authentication, health checks |
+| `tests/CartService.Domain.Tests` | Unit tests of the business rules |
 | `tests/CartService.Architecture.Tests` | Enforces the allowed dependencies between layers |
-| `tests/CartService.Api.IntegrationTests` | End-to-end tests against real containers |
+| `tests/CartService.Api.IntegrationTests` | Tests against real containers: PostgreSQL, Service Bus emulator |

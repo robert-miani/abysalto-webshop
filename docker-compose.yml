@@ -1,0 +1,35 @@
+# Local environment: the Cart API and its PostgreSQL database.
+# The passwords below are for local containers only. Real environments get secrets from Azure Key Vault.
+name: cartservice
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: cartservice
+      POSTGRES_USER: cart
+      POSTGRES_PASSWORD: cart-local-only
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cart -d cartservice"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # "GSS Encryption Mode=Disable" stops Npgsql from probing for Kerberos, which the slim runtime image lacks.
+      Database__ConnectionString: "Host=postgres;Database=cartservice;Username=cart;Password=cart-local-only;GSS Encryption Mode=Disable"
+      Database__ApplyMigrationsOnStartup: "true"
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres-data:

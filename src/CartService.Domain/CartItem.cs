@@ -7,6 +7,14 @@ using System;
 /// </summary>
 public sealed class CartItem
 {
+    // Used by Entity Framework Core to rebuild a line from the database. Not part of the domain model.
+    private CartItem()
+    {
+        ProductId = null!;
+        ProductName = null!;
+        UnitPrice = null!;
+    }
+
     public CartItem(string productId, string productName, Money unitPrice, int quantity)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(productId);
