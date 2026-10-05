@@ -4,6 +4,7 @@ using System;
 using CartService.Application.Abstractions;
 using CartService.Infrastructure.Catalog;
 using CartService.Infrastructure.Guests;
+using CartService.Infrastructure.Idempotency;
 using CartService.Infrastructure.Messaging;
 using CartService.Infrastructure.Outbox;
 using CartService.Infrastructure.Persistence;
@@ -53,6 +54,12 @@ public static class Module
 
         services.AddScoped<OutboxStore>();
         services.AddSingleton<IOutboxPublisher, ServiceBusOutboxPublisher>();
+
+        services.AddOptions<IdempotencyOptions>()
+            .BindConfiguration(IdempotencyOptions.SectionName)
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddScoped<IIdempotencyStore, IdempotencyStore>();
 
         // Hosted services start in the order of registration: the schema must exist before the relay looks at it.
         services.AddHostedService<DatabaseMigrationService>();

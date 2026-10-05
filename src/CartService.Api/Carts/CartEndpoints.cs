@@ -6,6 +6,8 @@ using System.ComponentModel.DataAnnotations;
 using System.Threading;
 using System.Threading.Tasks;
 using CartService.Api.Authentication;
+using CartService.Api.Idempotency;
+using CartService.Api.RateLimiting;
 using CartService.Api.Requesters;
 using CartService.Application.Carts;
 using Microsoft.AspNetCore.Builder;
@@ -16,7 +18,10 @@ internal static class CartEndpoints
 {
     public static IEndpointRouteBuilder MapCartEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        RouteGroupBuilder carts = endpoints.MapGroup("/v1/carts").WithTags("Carts");
+        RouteGroupBuilder carts = endpoints.MapGroup("/v1/carts")
+            .WithTags("Carts")
+            .RequireRateLimiting(RateLimitingRegistration.DefaultPolicy)
+            .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         // A cart is personal data and must never be stored by a cache.
         carts.AddEndpointFilter(async (context, next) =>
@@ -33,6 +38,7 @@ internal static class CartEndpoints
                 + "Without a token, a guest cart is created and 201 returns the cart together with its secret guestToken, which is shown only once.")
             .Produces<GuestCartCreatedResponse>(StatusCodes.Status201Created)
             .Produces<CartDto>(StatusCodes.Status200OK)
+            .RequireRateLimiting(RateLimitingRegistration.StrictPolicy)
             .AllowAnonymous();
 
         carts.MapGet("/me", GetMyCart)
@@ -71,7 +77,11 @@ internal static class CartEndpoints
         carts.MapPost("/{cartId:guid}/items", AddItem)
             .WithName("AddItem")
             .WithSummary("Adds a product to the cart. The price comes from the catalog.")
-            .WithDescription("Adding a product that is already in the cart adds the quantities and takes the latest catalog name and price.")
+            .WithDescription("Adding a product that is already in the cart adds the quantities and takes the latest catalog name and price. "
+                + "Adding twice is not the same as adding once, so a client that is unsure whether a request arrived sends it again with the "
+                + "same Idempotency-Key header: the product is added once and the answer of the first request is returned again, with the "
+                + "header Idempotent-Replayed: true. A key belongs to its requester and is kept for 24 hours. The same key with another body "
+                + "answers 422, and a repeat that arrives while the first request still runs answers 409 with Retry-After.")
             .Produces<CartDto>(StatusCodes.Status200OK)
             .ProducesValidationProblem()
             .ProducesProblems(
@@ -79,7 +89,8 @@ internal static class CartEndpoints
                 StatusCodes.Status404NotFound,
                 StatusCodes.Status409Conflict,
                 StatusCodes.Status422UnprocessableEntity)
-            .AddEndpointFilter<RequireRequesterFilter>();
+            .AddEndpointFilter<RequireRequesterFilter>()
+            .AddEndpointFilter<IdempotencyFilter>();
 
         carts.MapPut("/{cartId:guid}/items/{productId}", ChangeQuantity)
             .WithName("ChangeItemQuantity")
@@ -116,6 +127,7 @@ internal static class CartEndpoints
                 StatusCodes.Status404NotFound,
                 StatusCodes.Status409Conflict,
                 StatusCodes.Status422UnprocessableEntity)
+            .RequireRateLimiting(RateLimitingRegistration.StrictPolicy)
             .AddEndpointFilter<RequireRequesterFilter>();
 
         return endpoints;

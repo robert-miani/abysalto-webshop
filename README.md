@@ -84,7 +84,7 @@ The sample products are `tee-blue-m`, `tee-blue-l`, `hoodie-grey-m`, `cap-red`, 
 | `POST /v1/carts` | Customer or anonymous | Customer: 201 with the cart, or 200 when they already have an active cart. Anonymous: 201 with a guest cart and its `guestToken` |
 | `GET /v1/carts/me` | Customer | The active cart, or 404 |
 | `GET /v1/carts/{cartId}` | Owner | The cart. A missing cart and somebody else's cart both give 404 |
-| `POST /v1/carts/{cartId}/items` | Owner | Adds a product; the name and price come from the catalog |
+| `POST /v1/carts/{cartId}/items` | Owner | Adds a product; the name and price come from the catalog. Send an `Idempotency-Key` header to make the request safe to repeat |
 | `PUT /v1/carts/{cartId}/items/{productId}` | Owner | Sets the quantity |
 | `DELETE /v1/carts/{cartId}/items/{productId}` | Owner | 204, also when the product is not in the cart |
 | `POST /v1/carts/{cartId}/checkout` | Customer who owns the cart | 202 with the `checkoutId`; the cart becomes read-only and the `CartCheckedOut` event is published. Repeating it returns the same id |
@@ -151,6 +151,58 @@ sequenceDiagram
 The event is a CloudEvents 1.0 document in structured JSON mode; see `CartCheckedOut` in
 `src/CartService.Application/Events` and the end-to-end test `CheckoutEventEndToEndTests`.
 
+### Safe retries with idempotency keys
+
+Adding a product twice is not the same as adding it once, so a client that does not get an answer, for example
+because the connection broke, cannot just send the request again. It sends the same request with an
+`Idempotency-Key` header (1 to 128 characters: letters, digits, `-`, `_`, `.`, `:`; a UUID is fine). The header is
+optional; without it every request is carried out.
+
+```bash
+curl -s -X POST http://localhost:8080/v1/carts/<cart id>/items -H "Authorization: Bearer $TOKEN"   -H "Idempotency-Key: 6f1d2c9e-0b8a-4c55-9a43-1e7f5b2d8c10"   -H "Content-Type: application/json" -d '{"productId":"cap-red","quantity":1}'
+```
+
+Send it again and the cap is not added a second time: the answer of the first request comes back, with the header
+`Idempotent-Replayed: true`.
+
+| Situation | Answer |
+| --- | --- |
+| First request with a key | Carried out; a successful answer is stored for 24 hours |
+| Same key and same request again | The stored answer, `Idempotent-Replayed: true`. Nothing changes |
+| Same key, different body or cart | 422 `idempotency.key_reused` |
+| Same key while the first request still runs | 409 `idempotency.request_in_progress` with `Retry-After` |
+| The first request failed (validation, unknown product, conflict, error) | The key is given back; the client can fix the request and use the same key |
+
+Keys belong to the requester: two customers (or a customer and a guest) can use the same key without seeing
+each other's answers. The records live in the `idempotency_records` table. The claim is one
+`INSERT ... ON CONFLICT DO NOTHING`, so the database decides which of several parallel requests wins, with any
+number of service instances. A request that dies while it runs holds its key for at most 30 seconds
+(`Idempotency:InProgressLease`); a stored answer is kept for `Idempotency:Retention` (24 hours).
+
+One limit is accepted on purpose: the cart change and the stored answer are two separate database writes. If
+the service dies exactly between them, the key frees itself after the lease and a repeat would add the product
+again. Writing both in one transaction would close that gap; for a shopping cart, where the customer sees the
+result and can correct it, that was not worth the coupling. Checkout and merging need no key because they are
+idempotent by their state (see the sections above).
+
+### Rate limiting
+
+Every requester has a token bucket, so one client that loops or abuses the API cannot use up the service for
+others. A signed-in customer is limited by customer id; everybody else is limited by IP address, because a guest
+cart token cannot be trusted as a key before it is checked (a client could invent a new one for every request).
+
+| Bucket | Used for | Burst | Sustained |
+| --- | --- | --- | --- |
+| Normal | All cart endpoints | 60 | 10 per second |
+| Strict | Checkout and creating a cart, which an anonymous visitor can do without any proof | 10 | 10 per minute |
+
+A request over the limit answers 429 with problem details (`code` `rate_limit.exceeded`) and a `Retry-After`
+header in seconds. Health checks are not limited. The numbers are in the `RateLimiting` section of
+`appsettings.json`; `RateLimiting:Enabled` switches the limits off, which the integration tests do. Behind a
+reverse proxy or ingress, set `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` so the limit sees the address of the
+client and not the address of the proxy. The edge of the platform (Front Door and API Management) is still the
+place that stops floods; this limit protects the service itself.
+
 ### Authentication
 
 | Who | How |
@@ -173,7 +225,10 @@ cart. Errors are RFC 7807 problem details with a stable `code`:
 | 401 | No valid bearer token or cart token | |
 | 404 | The cart does not exist or belongs to somebody else | `cart.not_found` |
 | 409 | Two requests changed the same cart at once; read it again and retry | `cart.concurrency_conflict` |
+| 409 | A request with the same `Idempotency-Key` is still running; wait for `Retry-After` | `idempotency.request_in_progress` |
 | 422 | A business rule is broken | `cart.product_not_found`, `cart.quantity_out_of_range`, `cart.item_limit_exceeded`, `cart.item_not_found`, `cart.not_active`, `cart.empty`, `cart.checkout_requires_customer` |
+| 422 | An `Idempotency-Key` was already used for a different request | `idempotency.key_reused` |
+| 429 | Too many requests; wait for `Retry-After` | `rate_limit.exceeded` |
 
 ### Run the API from the command line
 
@@ -199,7 +254,7 @@ run the API in memory against them, and remove the containers when the tests fin
 
 | Topic | Decision |
 | --- | --- |
-| Schema | `carts`, `cart_items`, and `outbox_messages`, created by Entity Framework Core migrations in `src/CartService.Infrastructure/Persistence/Migrations` |
+| Schema | `carts`, `cart_items`, `outbox_messages`, and `idempotency_records`, created by Entity Framework Core migrations in `src/CartService.Infrastructure/Persistence/Migrations` |
 | Integrity in the database | One owner per cart, quantity between 1 and 20, and one active cart per customer (partial unique index) |
 | Concurrent changes | Every change increments the cart version; a write based on an old version is rejected and becomes HTTP 409 |
 | Applying migrations | `Database:ApplyMigrationsOnStartup` is on for Docker Compose and local runs, and off by default so that production applies migrations in the delivery pipeline |

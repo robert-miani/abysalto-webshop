@@ -80,7 +80,20 @@ public sealed class OpenApiDocumentTests
 
         string[] responses = paths.GetProperty("/v1/carts/{cartId}/items").GetProperty("post").GetProperty("responses")
             .EnumerateObject().Select(property => property.Name).Order().ToArray();
-        responses.ShouldBe(new[] { "200", "400", "401", "404", "409", "422" });
+        responses.ShouldBe(new[] { "200", "400", "401", "404", "409", "422", "429" });
+    }
+
+    [Fact]
+    public async Task OnlyAddingAProductDocumentsTheIdempotencyKeyHeader()
+    {
+        using TestApi api = new TestApi(_postgres, "Development");
+        using HttpClient client = api.Anonymous();
+
+        JsonElement paths = (await client.GetFromJsonAsync<JsonElement>("/openapi/v1.json", Token)).GetProperty("paths");
+
+        HeaderParametersOf(paths, "/v1/carts/{cartId}/items", "post").ShouldBe(new[] { "Idempotency-Key" });
+        HeaderParametersOf(paths, "/v1/carts/{cartId}/checkout", "post").ShouldBeEmpty();
+        HeaderParametersOf(paths, "/v1/carts", "post").ShouldBeEmpty();
     }
 
     [Fact]
@@ -91,6 +104,21 @@ public sealed class OpenApiDocumentTests
 
         (await client.GetAsync("/openapi/v1.json", Token)).StatusCode.ShouldBe(HttpStatusCode.NotFound);
         (await client.GetAsync("/scalar", Token)).StatusCode.ShouldBe(HttpStatusCode.NotFound);
+    }
+
+    private static string[] HeaderParametersOf(JsonElement paths, string path, string method)
+    {
+        JsonElement operation = paths.GetProperty(path).GetProperty(method);
+
+        if (!operation.TryGetProperty("parameters", out JsonElement parameters))
+        {
+            return [];
+        }
+
+        return parameters.EnumerateArray()
+            .Where(parameter => parameter.GetProperty("in").GetString() == "header")
+            .Select(parameter => parameter.GetProperty("name").GetString()!)
+            .ToArray();
     }
 
     private static string[] SecurityOf(JsonElement paths, string path, string method)

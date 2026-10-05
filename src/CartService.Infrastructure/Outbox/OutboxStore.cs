@@ -6,7 +6,6 @@ using System.Data.Common;
 using System.Threading;
 using System.Threading.Tasks;
 using CartService.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -50,7 +49,7 @@ internal sealed class OutboxStore
             RETURNING message.id, message.type, message.ordering_key, message.payload::text, message.occurred_at, message.attempts
             """;
 
-        await using NpgsqlCommand command = await CreateCommandAsync(sql, cancellationToken);
+        await using NpgsqlCommand command = await _context.CreateCommandAsync(sql, cancellationToken);
         command.Parameters.Add(new NpgsqlParameter("lease", NpgsqlDbType.Interval) { Value = lease });
         command.Parameters.AddWithValue("maxAttempts", maxAttempts);
         command.Parameters.AddWithValue("batchSize", batchSize);
@@ -84,7 +83,7 @@ internal sealed class OutboxStore
             WHERE id = @id
             """;
 
-        await using NpgsqlCommand command = await CreateCommandAsync(sql, cancellationToken);
+        await using NpgsqlCommand command = await _context.CreateCommandAsync(sql, cancellationToken);
         command.Parameters.AddWithValue("id", id);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -104,18 +103,10 @@ internal sealed class OutboxStore
             ? error
             : error[..OutboxMessageConfiguration.MaxErrorLength];
 
-        await using NpgsqlCommand command = await CreateCommandAsync(sql, cancellationToken);
+        await using NpgsqlCommand command = await _context.CreateCommandAsync(sql, cancellationToken);
         command.Parameters.AddWithValue("id", id);
         command.Parameters.Add(new NpgsqlParameter("delay", NpgsqlDbType.Interval) { Value = retryDelay });
         command.Parameters.AddWithValue("error", shortError);
         await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    private async Task<NpgsqlCommand> CreateCommandAsync(string sql, CancellationToken cancellationToken)
-    {
-        await _context.Database.OpenConnectionAsync(cancellationToken);
-        NpgsqlConnection connection = (NpgsqlConnection)_context.Database.GetDbConnection();
-
-        return new NpgsqlCommand(sql, connection);
     }
 }

@@ -18,5 +18,8 @@ public sealed class CartApiFactory : WebApplicationFactory<Program>
 
         // Most tests do not need a message broker, so the relay is off. A test that does need it turns it on.
         builder.UseSetting("Outbox:Enabled", "false");
+
+        // Tests send many requests from one address. The tests of the limits turn them on again.
+        builder.UseSetting("RateLimiting:Enabled", "false");
     }
 }
