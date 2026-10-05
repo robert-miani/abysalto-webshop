@@ -6,6 +6,7 @@
     <Project Path="src/CartService.Infrastructure/CartService.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/CartService.Domain.Tests/CartService.Domain.Tests.csproj" />
     <Project Path="tests/CartService.Api.IntegrationTests/CartService.Api.IntegrationTests.csproj" />
     <Project Path="tests/CartService.Architecture.Tests/CartService.Architecture.Tests.csproj" />
   </Folder>
