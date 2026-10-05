@@ -14,6 +14,9 @@ public static class Module
         services.AddScoped<CreateCartHandler>();
         services.AddScoped<GetCartHandler>();
         services.AddScoped<GetMyCartHandler>();
+        services.AddScoped<AddItemHandler>();
+        services.AddScoped<ChangeItemQuantityHandler>();
+        services.AddScoped<RemoveItemHandler>();
 
         return services;
     }
