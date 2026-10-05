@@ -25,6 +25,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # Development enables the token endpoint and the local signing key. Production refuses both and needs
+      # Authentication__Authority (Microsoft Entra External ID) instead.
+      ASPNETCORE_ENVIRONMENT: Development
       # "GSS Encryption Mode=Disable" stops Npgsql from probing for Kerberos, which the slim runtime image lacks.
       Database__ConnectionString: "Host=postgres;Database=cartservice;Username=cart;Password=cart-local-only;GSS Encryption Mode=Disable"
       Database__ApplyMigrationsOnStartup: "true"
