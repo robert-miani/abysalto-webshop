@@ -12,4 +12,8 @@ public static class CartErrorCodes
     public const string ItemLimitExceeded = "cart.item_limit_exceeded";
 
     public const string ItemNotFound = "cart.item_not_found";
+
+    public const string Empty = "cart.empty";
+
+    public const string CheckoutRequiresCustomer = "cart.checkout_requires_customer";
 }

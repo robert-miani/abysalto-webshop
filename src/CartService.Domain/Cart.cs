@@ -144,6 +144,33 @@ public sealed class Cart
         Touch(now);
     }
 
+    /// <summary>
+    /// Starts checkout. The cart becomes read-only until the Order service answers, and the returned checkout id
+    /// identifies this checkout everywhere, including the event that starts the order.
+    /// </summary>
+    public Guid Checkout(DateTimeOffset now)
+    {
+        EnsureActive();
+
+        if (CustomerId is null)
+        {
+            throw new CartRuleViolationException(
+                CartErrorCodes.CheckoutRequiresCustomer,
+                "Guests must sign in and merge their cart before checkout.");
+        }
+
+        if (_items.Count == 0)
+        {
+            throw new CartRuleViolationException(CartErrorCodes.Empty, "An empty cart cannot be checked out.");
+        }
+
+        CheckoutId = Guid.CreateVersion7();
+        Status = CartStatus.CheckoutPending;
+        Touch(now);
+
+        return CheckoutId.Value;
+    }
+
     public bool IsOwnedByCustomer(Guid customerId)
     {
         return CustomerId.HasValue && CustomerId.Value == customerId;
