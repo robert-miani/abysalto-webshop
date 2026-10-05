@@ -15,12 +15,14 @@ public sealed class MergeGuestCartHandler
     private readonly ICartRepository _carts;
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _time;
+    private readonly ICartCache _cache;
 
-    public MergeGuestCartHandler(ICartRepository carts, IUnitOfWork unitOfWork, TimeProvider time)
+    public MergeGuestCartHandler(ICartRepository carts, IUnitOfWork unitOfWork, TimeProvider time, ICartCache cache)
     {
         _carts = carts;
         _unitOfWork = unitOfWork;
         _time = time;
+        _cache = cache;
     }
 
     /// <summary>
@@ -51,6 +53,10 @@ public sealed class MergeGuestCartHandler
 
         customerCart.MergeGuestCart(guestCart, now);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        // Both carts changed: the guest cart is now read-only and the customer cart has the items.
+        await _cache.RemoveAsync(guestCart, cancellationToken);
+        await _cache.RemoveAsync(customerCart, cancellationToken);
 
         return CartDto.From(customerCart);
     }

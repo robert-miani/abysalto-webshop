@@ -10,6 +10,7 @@ using CartService.Api.IntegrationTests.Persistence;
 using CartService.Application.Abstractions;
 using CartService.Application.Carts;
 using CartService.Domain;
+using CartService.Infrastructure.Caching;
 using CartService.Infrastructure.Outbox;
 using CartService.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -98,7 +99,7 @@ public sealed class OutboxWriterTests
             sameCart.AddItem("mug", "Mug", Money.Eur(6.50m), 1, Now.AddMinutes(1));
             await new UnitOfWork(other).SaveChangesAsync(Token);
         });
-        CheckoutHandler handler = new CheckoutHandler(repository, new UnitOfWork(context), new OutboxWriter(context), TimeProvider.System);
+        CheckoutHandler handler = new CheckoutHandler(repository, new UnitOfWork(context), new OutboxWriter(context), TimeProvider.System, new NullCartCache());
 
         await Should.ThrowAsync<ConcurrencyConflictException>(
             () => handler.HandleAsync(cart.Id, Requester.ForCustomer(customerId), Token));
@@ -143,7 +144,7 @@ public sealed class OutboxWriterTests
     private async Task<CheckoutResult> CheckoutAsync(Guid cartId, Guid customerId)
     {
         await using CartDbContext context = _postgres.CreateContext();
-        CheckoutHandler handler = new CheckoutHandler(new CartRepository(context), new UnitOfWork(context), new OutboxWriter(context), TimeProvider.System);
+        CheckoutHandler handler = new CheckoutHandler(new CartRepository(context), new UnitOfWork(context), new OutboxWriter(context), TimeProvider.System, new NullCartCache());
 
         return await handler.HandleAsync(cartId, Requester.ForCustomer(customerId), Token);
     }

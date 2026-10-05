@@ -93,6 +93,6 @@ public sealed class GetCartHandlerTests
 
     private GetCartHandler CreateHandler()
     {
-        return new GetCartHandler(_environment.Carts);
+        return new GetCartHandler(_environment.Carts, _environment.Cache);
     }
 }

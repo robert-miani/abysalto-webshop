@@ -139,6 +139,6 @@ public sealed class CheckoutHandlerTests
 
     private CheckoutHandler CreateHandler()
     {
-        return new CheckoutHandler(_environment.Carts, _environment.UnitOfWork, _environment.Outbox, _environment.Time);
+        return new CheckoutHandler(_environment.Carts, _environment.UnitOfWork, _environment.Outbox, _environment.Time, _environment.Cache);
     }
 }
