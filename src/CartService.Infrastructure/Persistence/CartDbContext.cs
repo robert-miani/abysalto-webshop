@@ -1,6 +1,7 @@
 namespace CartService.Infrastructure.Persistence;
 
 using CartService.Domain;
+using CartService.Infrastructure.Outbox;
 using Microsoft.EntityFrameworkCore;
 
 internal sealed class CartDbContext : DbContext
@@ -11,6 +12,8 @@ internal sealed class CartDbContext : DbContext
     }
 
     public DbSet<Cart> Carts => Set<Cart>();
+
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

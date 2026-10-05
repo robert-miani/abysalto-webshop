@@ -4,6 +4,7 @@ using System;
 using CartService.Application.Abstractions;
 using CartService.Infrastructure.Catalog;
 using CartService.Infrastructure.Guests;
+using CartService.Infrastructure.Outbox;
 using CartService.Infrastructure.Persistence;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,6 +38,7 @@ public static class Module
 
         services.AddScoped<ICartRepository, CartRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+        services.AddScoped<IOutbox, OutboxWriter>();
         services.AddHostedService<DatabaseMigrationService>();
 
         return services;
