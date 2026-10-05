@@ -27,7 +27,7 @@ It is under construction; this section grows with each pull request.
 ### Prerequisites
 
 - .NET 10 SDK (see `global.json`)
-- Docker (the integration tests start PostgreSQL and the Azure Service Bus emulator with Testcontainers)
+- Docker (the integration tests start PostgreSQL, Redis and the Azure Service Bus emulator with Testcontainers)
 - About 3 GB of free memory for Docker: the Service Bus emulator needs a SQL Server
 
 ### Run with Docker Compose
@@ -36,7 +36,7 @@ It is under construction; this section grows with each pull request.
 docker compose up --build
 ```
 
-This starts PostgreSQL 17, the Azure Service Bus emulator (with its SQL Server), and the API in the
+This starts PostgreSQL 17, Redis, the Azure Service Bus emulator (with its SQL Server), and the API in the
 Development environment. The API applies the database migrations when it starts and answers on
 http://localhost:8080. The first start downloads about 2 GB of images, and the emulator needs up to a minute
 to become ready; the relay keeps retrying until it is. Stop and remove everything, including the database
@@ -71,6 +71,16 @@ docker compose logs api | grep Published
 docker compose exec postgres psql -U cart -d cartservice -c "SELECT type, attempts, processed_at FROM outbox_messages"
 ```
 
+Look at the cache and at readiness:
+
+```bash
+docker compose exec redis redis-cli --scan --pattern 'cart:*'
+curl -s http://localhost:8080/health/ready
+```
+
+Stop Redis with `docker compose stop redis` and everything above keeps working, only the readiness report says
+`Degraded`. Start it again with `docker compose start redis`.
+
 **As a guest.** `POST /v1/carts` without a token creates a guest cart and returns a `guestToken` once. Send it
 in the `X-Cart-Token` header on every later request for that cart.
 
@@ -90,7 +100,8 @@ The sample products are `tee-blue-m`, `tee-blue-l`, `hoodie-grey-m`, `cap-red`, 
 | `POST /v1/carts/{cartId}/checkout` | Customer who owns the cart | 202 with the `checkoutId`; the cart becomes read-only and the `CartCheckedOut` event is published. Repeating it returns the same id |
 | `POST /v1/carts/me/merge` | Customer, plus the guest's `X-Cart-Token` | The customer's cart after the guest cart was merged into it |
 | `POST /dev/token` | Anyone, Development only | A token for a customer id |
-| `GET /health/live` | Anyone | Liveness |
+| `GET /health/live` | Anyone | Liveness: the process answers. It runs no checks |
+| `GET /health/ready` | Anyone | Readiness: 200 when healthy or degraded, 503 when the database is down. See below |
 
 ### Guest carts and merging
 
@@ -203,6 +214,47 @@ reverse proxy or ingress, set `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` so the 
 client and not the address of the proxy. The edge of the platform (Front Door and API Management) is still the
 place that stops floods; this limit protects the service itself.
 
+### Caching with Redis
+
+Reading a cart is by far the most common request, so `GET /v1/carts/{id}` and `GET /v1/carts/me` are served
+from Redis when they can be. PostgreSQL stays the only source of truth: a cart is never changed in the cache,
+only read into it.
+
+| Topic | Decision |
+| --- | --- |
+| Pattern | Cache-aside. A miss reads PostgreSQL and stores the cart for 60 seconds (`Cache:EntryLifetime`) |
+| Writes | Every change reads the cart from PostgreSQL, saves it, and then removes the cached cart (the merge removes both carts, checkout also the customer's active cart). The next read loads the new state. A change that fails to save leaves the cache alone |
+| Privacy | The owner is stored with the cart and checked on every cache hit, so a hit gives the same 404 as the database does. Only the hash of a guest token is stored |
+| Keys | `cart:v1:id:<id>` and `cart:v1:customer:<customer id>` (the active cart only). The version in the key means a release that changes the entry never reads entries of the old release |
+| Redis is slow or down | Every call has a timeout of 300 ms (`Cache:Timeout`) and a circuit breaker: after repeated failures the cache is skipped for 15 seconds (`Cache:BreakDuration`). A failure is the same as a miss, so no request fails or waits because of Redis. The service starts without Redis |
+| No cache configured | Leave `Cache:ConnectionString` empty and every read goes to PostgreSQL |
+
+One window is accepted on purpose: if Redis is unreachable when a cart changes, the cached copy cannot be
+removed. If the same Redis comes back with its old data, a client can read the old cart for at most
+`Cache:EntryLifetime` (60 seconds). Writes are never affected, because they always start from PostgreSQL and the
+cart version rejects a stale write. A shorter lifetime narrows the window; a cart is small, so the price of a
+shorter one is only more reads from PostgreSQL.
+
+In production Redis is Azure Cache for Redis. Its connection string comes from Key Vault like the other secrets.
+
+### Health checks
+
+`/health/live` only says that the process answers. A dependency that is down must never restart the service,
+because a restart does not bring the dependency back.
+
+`/health/ready` decides whether the service gets traffic and lists every check by name and status, never an
+exception or an address:
+
+| Check | If it fails | Why |
+| --- | --- | --- |
+| `postgres` | Unhealthy, HTTP 503 | The service cannot do anything without its database |
+| `redis` | Degraded, HTTP 200 | The service works without the cache, only slower. Taking it out of rotation would turn a slowdown into an outage |
+| `outbox` | Degraded, HTTP 200 | Events wait longer than `Outbox:DegradedAfter` (1 minute) or ran out of attempts, so Service Bus or the relay has a problem. Carts keep working and no event is lost |
+
+The service may only send to Service Bus and the emulator has no management API, so it cannot ask Service Bus
+whether it is reachable. The age of the oldest waiting event in the outbox answers the question that matters:
+do events reach the Order service.
+
 ### Authentication
 
 | Who | How |
@@ -233,7 +285,7 @@ cart. Errors are RFC 7807 problem details with a stable `code`:
 ### Run the API from the command line
 
 ```bash
-docker compose up -d postgres servicebus-emulator
+docker compose up -d postgres redis servicebus-emulator
 dotnet run --project src/CartService.Api
 ```
 
