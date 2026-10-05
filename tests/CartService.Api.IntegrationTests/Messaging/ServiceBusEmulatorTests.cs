@@ -1,51 +1,53 @@
 namespace CartService.Api.IntegrationTests.Messaging;
 
 using System;
-using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Azure.Messaging.ServiceBus;
 using Shouldly;
-using Testcontainers.ServiceBus;
 using Xunit;
 
+/// <summary>
+/// Shows that the emulator works with the shared configuration: a message with a session id sent to the topic
+/// reaches the session-enabled subscription.
+/// </summary>
+[Collection(MessagingCollection.Name)]
 [Trait("Category", "Integration")]
-public sealed class ServiceBusEmulatorTests : IAsyncLifetime
+public sealed class ServiceBusEmulatorTests
 {
-    private const string TopicName = "cart-events";
-    private const string SubscriptionName = "order-service";
+    private readonly ServiceBusFixture _serviceBus;
 
-    private readonly ServiceBusContainer _serviceBus = new ServiceBusBuilder("mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.1")
-        .WithAcceptLicenseAgreement(true)
-        .WithConfig(Path.Combine(AppContext.BaseDirectory, "ServiceBus", "Config.json"))
-        .Build();
-
-    public async ValueTask InitializeAsync()
+    public ServiceBusEmulatorTests(ServiceBusFixture serviceBus)
     {
-        await _serviceBus.StartAsync(TestContext.Current.CancellationToken);
+        _serviceBus = serviceBus;
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        await _serviceBus.DisposeAsync();
-    }
+    private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Fact]
     public async Task MessageSentToCartEventsTopicReachesOrderServiceSubscription()
     {
-        await using ServiceBusClient client = new ServiceBusClient(_serviceBus.GetConnectionString());
-        ServiceBusSender sender = client.CreateSender(TopicName);
-        ServiceBusReceiver receiver = client.CreateReceiver(TopicName, SubscriptionName);
+        await using ServiceBusClient client = new ServiceBusClient(_serviceBus.ConnectionString);
+        ServiceBusSender sender = client.CreateSender(ServiceBusFixture.TopicName);
+        string sessionId = Guid.NewGuid().ToString();
         ServiceBusMessage message = new ServiceBusMessage(BinaryData.FromString("{}"))
         {
             MessageId = Guid.NewGuid().ToString(),
+            SessionId = sessionId,
             Subject = "CartCheckedOut",
         };
 
-        await sender.SendMessageAsync(message, TestContext.Current.CancellationToken);
-        ServiceBusReceivedMessage? received = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        await sender.SendMessageAsync(message, Token);
+        await using ServiceBusSessionReceiver receiver = await client.AcceptSessionAsync(
+            ServiceBusFixture.TopicName,
+            ServiceBusFixture.SubscriptionName,
+            sessionId,
+            cancellationToken: Token);
+        ServiceBusReceivedMessage? received = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(30), Token);
 
         received.ShouldNotBeNull();
         received.Subject.ShouldBe("CartCheckedOut");
         received.MessageId.ShouldBe(message.MessageId);
+        received.SessionId.ShouldBe(sessionId);
     }
 }

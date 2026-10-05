@@ -15,5 +15,8 @@ public sealed class CartApiFactory : WebApplicationFactory<Program>
         // The settings are validated at startup. Tests that do not touch the database never connect to it.
         builder.UseSetting("Database:ConnectionString", "Host=localhost;Database=cartservice_not_used");
         builder.UseSetting("Authentication:DevelopmentSigningKey", SigningKey);
+
+        // Most tests do not need a message broker, so the relay is off. A test that does need it turns it on.
+        builder.UseSetting("Outbox:Enabled", "false");
     }
 }

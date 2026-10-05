@@ -4,6 +4,8 @@ using System;
 using CartService.Application.Abstractions;
 using CartService.Infrastructure.Catalog;
 using CartService.Infrastructure.Guests;
+using CartService.Infrastructure.Messaging;
+using CartService.Infrastructure.Outbox;
 using CartService.Infrastructure.Persistence;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,7 +39,24 @@ public static class Module
 
         services.AddScoped<ICartRepository, CartRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+        services.AddScoped<IOutbox, OutboxWriter>();
+
+        services.AddOptions<OutboxOptions>()
+            .BindConfiguration(OutboxOptions.SectionName)
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddOptions<ServiceBusOptions>()
+            .BindConfiguration(ServiceBusOptions.SectionName)
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<ServiceBusOptions>, ServiceBusOptionsValidator>();
+
+        services.AddScoped<OutboxStore>();
+        services.AddSingleton<IOutboxPublisher, ServiceBusOutboxPublisher>();
+
+        // Hosted services start in the order of registration: the schema must exist before the relay looks at it.
         services.AddHostedService<DatabaseMigrationService>();
+        services.AddHostedService<OutboxRelay>();
 
         return services;
     }

@@ -16,7 +16,7 @@ internal sealed class TestApi : IDisposable
     private readonly CartApiFactory _baseFactory;
     private readonly WebApplicationFactory<Program> _factory;
 
-    public TestApi(PostgresFixture postgres, string environment = "Testing")
+    public TestApi(PostgresFixture postgres, string environment = "Testing", Action<IWebHostBuilder>? configure = null)
     {
         _baseFactory = new CartApiFactory();
         _factory = _baseFactory.WithWebHostBuilder(builder =>
@@ -27,6 +27,8 @@ internal sealed class TestApi : IDisposable
             // the container explicitly.
             builder.UseSetting("Database:ConnectionString", postgres.ConnectionString);
             builder.UseSetting("Database:ApplyMigrationsOnStartup", "true");
+
+            configure?.Invoke(builder);
         });
     }
 
