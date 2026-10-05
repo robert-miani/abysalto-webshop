@@ -1,4 +1,4 @@
-# Local environment: the Cart API with PostgreSQL, Redis and the Azure Service Bus emulator.
+# Local environment: the Cart API with PostgreSQL, Redis, the Azure Service Bus emulator and the Aspire Dashboard.
 # The passwords below are for local containers only. Real environments get secrets from Azure Key Vault.
 name: cartservice
 
@@ -18,6 +18,16 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # Shows the traces, metrics and logs of the API at http://localhost:18888. It receives them over OTLP/gRPC on
+  # port 18889 inside the compose network and keeps them in memory only. It has no login, which is fine for a
+  # local container and wrong for anything else; in Azure the same data goes to Azure Monitor.
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:13.0
+    environment:
+      ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
+    ports:
+      - "18888:18888"
 
   # The cache. Nothing is stored on disk, so Redis starts empty. The API works without it: stop it with
   # "docker compose stop redis" and the API reads every cart from PostgreSQL.
@@ -69,6 +79,8 @@ services:
       # Started first, but the API does not wait for it to be healthy: the cache is optional.
       redis:
         condition: service_started
+      aspire-dashboard:
+        condition: service_started
     environment:
       # Development enables the token endpoint and the local signing key. Production refuses both and needs
       # Authentication__Authority (Microsoft Entra External ID) and ServiceBus__FullyQualifiedNamespace instead.
@@ -77,6 +89,7 @@ services:
       Database__ConnectionString: "Host=postgres;Database=cartservice;Username=cart;Password=cart-local-only;GSS Encryption Mode=Disable"
       Database__ApplyMigrationsOnStartup: "true"
       Cache__ConnectionString: "redis:6379"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://aspire-dashboard:18889"
       ServiceBus__ConnectionString: "Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
     ports:
       - "8080:8080"

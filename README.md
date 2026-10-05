@@ -5,7 +5,7 @@ This repository contains the solution to the Abysalto Senior Backend Developer t
 | Part | Location | Status |
 | --- | --- | --- |
 | High-level architecture and implementation strategy for a multi-channel retail platform (EU market, Croatia first) | [docs/architecture.md](docs/architecture.md) | Complete |
-| Cart Web API (reference implementation of one service from the architecture) | `src/` | In progress |
+| Cart Web API (reference implementation of one service from the architecture) | `src/` | Complete |
 
 ## Architecture document
 
@@ -22,7 +22,19 @@ the Markdown and Mermaid renderers). The Markdown file is the source; the HTML f
 ## Cart API
 
 The Cart API is one service of the platform described in the architecture document, built with .NET 10.
-It is under construction; this section grows with each pull request.
+It is deliberately small in scope and deliberately complete in operation: one aggregate and a handful of use
+cases, but with the parts that decide whether a service survives production (see the table below).
+
+| The architecture document decides | Where the Cart API does it |
+| --- | --- |
+| PostgreSQL owned by the service | [Database and migrations](#database-and-migrations): PostgreSQL 17 with Entity Framework Core, optimistic concurrency, constraints in the database |
+| Redis cache-aside that the service survives without | [Caching with Redis](#caching-with-redis) |
+| Events through a transactional outbox to Service Bus, CloudEvents | [Checkout and the outbox](#checkout-and-the-outbox) |
+| Customers and guests, identity from Entra External ID | [Authentication](#authentication) and [Guest carts and merging](#guest-carts-and-merging) |
+| Safe retries and protection from noisy clients | [Safe retries with idempotency keys](#safe-retries-with-idempotency-keys) and [Rate limiting](#rate-limiting) |
+| Health checks for the orchestrator | [Health checks](#health-checks) |
+| OpenTelemetry to Azure Monitor | [Observability](#observability) |
+| Trunk-based development, CI on every pull request | [Build, test and CI](#build-test-and-ci) |
 
 ### Prerequisites
 
@@ -36,8 +48,8 @@ It is under construction; this section grows with each pull request.
 docker compose up --build
 ```
 
-This starts PostgreSQL 17, Redis, the Azure Service Bus emulator (with its SQL Server), and the API in the
-Development environment. The API applies the database migrations when it starts and answers on
+This starts PostgreSQL 17, Redis, the Azure Service Bus emulator (with its SQL Server), the Aspire Dashboard, and
+the API in the Development environment. The API applies the database migrations when it starts and answers on
 http://localhost:8080. The first start downloads about 2 GB of images, and the emulator needs up to a minute
 to become ready; the relay keeps retrying until it is. Stop and remove everything, including the database
 volume, with `docker compose down -v`.
@@ -71,15 +83,20 @@ docker compose logs api | grep Published
 docker compose exec postgres psql -U cart -d cartservice -c "SELECT type, attempts, processed_at FROM outbox_messages"
 ```
 
-Look at the cache and at readiness:
+Read a cart, then look at the cache and at readiness (a checkout removes the cart from the cache, so read it
+after the checkout, or before):
 
 ```bash
+curl -s http://localhost:8080/v1/carts/<cart id> -H "Authorization: Bearer $TOKEN"
 docker compose exec redis redis-cli --scan --pattern 'cart:*'
 curl -s http://localhost:8080/health/ready
 ```
 
 Stop Redis with `docker compose stop redis` and everything above keeps working, only the readiness report says
 `Degraded`. Start it again with `docker compose start redis`.
+
+See what the service did at **http://localhost:18888** (the Aspire Dashboard): every request is a trace, and the
+trace of the checkout continues in the span that publishes the event. See [Observability](#observability).
 
 **As a guest.** `POST /v1/carts` without a token creates a guest cart and returns a `guestToken` once. Send it
 in the `X-Cart-Token` header on every later request for that cart.
@@ -255,6 +272,48 @@ The service may only send to Service Bus and the emulator has no management API,
 whether it is reachable. The age of the oldest waiting event in the outbox answers the question that matters:
 do events reach the Order service.
 
+### Observability
+
+The service produces traces, metrics and logs with OpenTelemetry. Docker Compose starts the Aspire Dashboard and
+sends everything to it; open http://localhost:18888.
+
+| Signal | What is collected |
+| --- | --- |
+| Traces | Every request (named after its route, never after the path with ids), its PostgreSQL calls, the Service Bus send, the HTTP client, and the cart's own spans: publishing an outbox message and a cleanup run. Health probes are not traced |
+| Metrics | ASP.NET Core, runtime, Npgsql and rate limiting, plus `cartservice.carts.created`, `items.added`, `checkouts`, `merges`, `cache.lookups` (hit or miss), `idempotency.requests` (by outcome), `outbox.published` (by result), `outbox.publish.duration` and `cleanup.deleted` |
+| Logs | Console logs in Development; one JSON document per line elsewhere, which the platform collects from standard output. With an OTLP endpoint the logs are exported too |
+
+How it is switched on: the service always produces the data, and it leaves the process only when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set, so a run without a collector has no export errors. In Azure the endpoint is a
+collector that feeds Azure Monitor, as the architecture document describes.
+
+- **One trace for a checkout.** The event stores the `traceparent` of the request that wrote it (the CloudEvents
+  distributed tracing extension). The relay publishes in a span that joins that trace, so one trace shows the
+  request, the failed and successful publish attempts, and, once the Order service reads the same attribute, the
+  order that follows.
+- **No secrets in telemetry.** The instrumentation does not record headers, and a test checks that no span holds
+  a bearer token or a guest token.
+- **No noise.** A database call that belongs to no trace (the relay polling every two seconds, startup) is
+  dropped by a sampler, so the dashboard shows the traces of requests and jobs and not thousands of one-query
+  traces. A query inside a request, a published message or a cleanup run has a parent and is kept.
+
+### Housekeeping
+
+Without cleanup the tables only grow. A background job runs one minute after startup and then every hour
+(`Cleanup` section of `appsettings.json`):
+
+| Deleted | When |
+| --- | --- |
+| Active guest carts | Nobody changed them for 30 days (`GuestCartIdleAfter`) |
+| Guest carts that were merged | 7 days after the merge (`MergedCartRetention`), long enough for a client to repeat the merge request |
+| Outbox messages | Published more than 7 days ago (`ProcessedOutboxRetention`); unpublished messages are never deleted |
+| Idempotency records | Expired |
+
+Customer carts are never deleted, whatever their age or status. Rows go in batches of 1000, so a large backlog never
+holds a long lock. Deleting is idempotent, so several instances that clean at the same time only repeat work; a
+failed run is logged and the next interval tries again. `Cleanup:Enabled` turns the job off, and the job counts
+what it deleted in `cartservice.cleanup.deleted`.
+
 ### Authentication
 
 | Who | How |
@@ -290,17 +349,25 @@ dotnet run --project src/CartService.Api
 ```
 
 The API listens on http://localhost:5080 and uses the connection strings in
-`src/CartService.Api/appsettings.Development.json`, which point to the containers above.
+`src/CartService.Api/appsettings.Development.json`, which point to the containers above. It exports no telemetry
+unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set (to send it to the dashboard, publish its port 18889 in
+`docker-compose.yml` and set the variable to `http://localhost:18889`).
 
-### Build and test
+### Build, test and CI
 
 ```bash
 dotnet build CartService.slnx
 dotnet test --solution CartService.slnx
 ```
 
-The integration tests need Docker. They start PostgreSQL and the Service Bus emulator, apply the real migrations,
-run the API in memory against them, and remove the containers when the tests finish.
+The integration tests need Docker. They start PostgreSQL, Redis and the Service Bus emulator, apply the real
+migrations, run the API in memory against them, and remove the containers when the tests finish. They include a
+Redis that is stopped and started again, a cleanup of every kind of row, and the traces of a checkout.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request: restore (NuGet Audit reports vulnerable
+packages), build with warnings as errors, `dotnet format --verify-no-changes`, the whole test suite, and a build of
+the Docker image. Development is trunk-based: a short branch, small commits that each build and pass the format
+check, a pull request, green CI, squash merge.
 
 ### Database and migrations
 
@@ -323,10 +390,25 @@ dotnet dotnet-ef migrations add <Name> --project src/CartService.Infrastructure 
 | Project | Responsibility |
 | --- | --- |
 | `src/CartService.Domain` | Cart aggregate and business rules, no dependencies |
-| `src/CartService.Application` | Use cases (one handler per use case), integration events, and ports |
-| `src/CartService.Infrastructure` | PostgreSQL, outbox and relay, Service Bus publisher, product catalog stand-in, guest tokens; later Redis |
-| `src/CartService.Api` | Host, Minimal API endpoints, authentication, OpenAPI, health checks |
+| `src/CartService.Application` | Use cases (one handler per use case), integration events, ports, and the telemetry instruments |
+| `src/CartService.Infrastructure` | PostgreSQL, idempotency store, outbox and relay, Service Bus publisher, Redis cache, cleanup job, health checks, product catalog stand-in, guest tokens |
+| `src/CartService.Api` | Host, Minimal API endpoints, authentication, idempotency filter, rate limiting, OpenTelemetry, OpenAPI, health endpoints |
 | `tests/CartService.Domain.Tests` | Unit tests of the business rules |
 | `tests/CartService.Application.Tests` | Unit tests of the handlers, with in-memory fakes |
 | `tests/CartService.Architecture.Tests` | Enforces the allowed dependencies between layers |
-| `tests/CartService.Api.IntegrationTests` | The API over HTTP against real containers: PostgreSQL and the Service Bus emulator |
+| `tests/CartService.Api.IntegrationTests` | The API over HTTP against real containers: PostgreSQL, Redis and the Service Bus emulator |
+
+### What was left out, and why
+
+This is a reference implementation of one service, not the platform. These are known gaps, each on purpose:
+
+| Left out | Why |
+| --- | --- |
+| Consuming `OrderConfirmed` and `CheckoutFailed` (the second half of the checkout saga) | The Order service does not exist here. The cart stays `CheckoutPending`; the architecture document describes the saga |
+| A real Catalog and Pricing service | `IProductCatalog` is the port; a configured list of eight products stands in. Prices are copied into the cart at the moment of adding |
+| A real Entra External ID tenant | The service validates tokens against `Authentication:Authority` in production. Development uses `POST /dev/token` and a local signing key, which production refuses |
+| Kubernetes manifests, Argo CD, Azure resources | They belong to the platform repositories of the delivery plan, not to one service |
+| Redis authentication and TLS | Local Redis is open on purpose. Azure Cache for Redis is configured through the connection string from Key Vault |
+| Other currencies | The launch market is the euro area, and `Money` is EUR only |
+| Stock reservation and availability | The Inventory service owns it. The cart does not promise stock |
+| Load testing at scale | The tests prove the behavior (parallel requests, a Redis outage, a broker outage); capacity needs a real environment |

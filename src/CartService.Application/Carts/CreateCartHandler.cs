@@ -64,6 +64,8 @@ public sealed class CreateCartHandler
             return ExistingCart(winner);
         }
 
+        CartTelemetry.CartsCreated.Add(1, CartTelemetry.Tag("kind", "customer"));
+
         return new CreateCartResult { Cart = CartDto.From(cart), Created = true };
     }
 
@@ -73,6 +75,7 @@ public sealed class CreateCartHandler
         Cart cart = Cart.CreateForGuest(token.Hash, _time.GetUtcNow());
         _carts.Add(cart);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+        CartTelemetry.CartsCreated.Add(1, CartTelemetry.Tag("kind", "guest"));
 
         return new CreateCartResult { Cart = CartDto.From(cart), Created = true, GuestToken = token.Value };
     }

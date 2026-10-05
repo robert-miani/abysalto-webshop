@@ -3,10 +3,12 @@ namespace CartService.Api.IntegrationTests.Outbox;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using CartService.Api.IntegrationTests.Persistence;
+using CartService.Application;
 using CartService.Infrastructure.Outbox;
 using Shouldly;
 using Xunit;
@@ -46,6 +48,67 @@ public sealed class OutboxRelayTests
         stored.LockedUntil.ShouldBeNull();
         stored.Attempts.ShouldBe(1);
         stored.LastError.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task PublishingAMessageIsATraceSpanWithTheMessageId()
+    {
+        await using RelayHarness harness = await RelayHarness.CreateWithNewDatabaseAsync(_postgres);
+        Guid id = await harness.SeedAsync(Start);
+        using SpanRecorder spans = new SpanRecorder(id);
+
+        await harness.Relay.ProcessBatchAsync(Token);
+
+        Activity span = spans.Stopped.ShouldHaveSingleItem();
+        span.DisplayName.ShouldBe("CartCheckedOut publish");
+        span.Kind.ShouldBe(ActivityKind.Producer);
+        span.GetTagItem("messaging.system").ShouldBe("servicebus");
+        span.GetTagItem("messaging.outbox.attempt").ShouldBe(1);
+        span.Status.ShouldNotBe(ActivityStatusCode.Error);
+    }
+
+    [Fact]
+    public async Task TheSpanJoinsTheTraceOfTheRequestThatWroteTheEvent()
+    {
+        await using RelayHarness harness = await RelayHarness.CreateWithNewDatabaseAsync(_postgres);
+        Guid id = await harness.SeedAsync(
+            Start,
+            payload: "{\"specversion\":\"1.0\",\"traceparent\":\"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\"}");
+        using SpanRecorder spans = new SpanRecorder(id);
+
+        await harness.Relay.ProcessBatchAsync(Token);
+
+        Activity span = spans.Stopped.ShouldHaveSingleItem();
+        span.TraceId.ToString().ShouldBe("0af7651916cd43dd8448eb211c80319c");
+        span.ParentSpanId.ToString().ShouldBe("b7ad6b7169203331");
+    }
+
+    [Fact]
+    public async Task AMessageWithoutATraceStartsATraceOfItsOwn()
+    {
+        await using RelayHarness harness = await RelayHarness.CreateWithNewDatabaseAsync(_postgres);
+        Guid id = await harness.SeedAsync(Start);
+        using SpanRecorder spans = new SpanRecorder(id);
+
+        await harness.Relay.ProcessBatchAsync(Token);
+
+        Activity span = spans.Stopped.ShouldHaveSingleItem();
+        span.ParentSpanId.ToString().ShouldBe("0000000000000000");
+    }
+
+    [Fact]
+    public async Task AFailedPublishMarksTheSpanAsAnError()
+    {
+        await using RelayHarness harness = await RelayHarness.CreateWithNewDatabaseAsync(_postgres);
+        harness.Publisher.FailWith = new InvalidOperationException("the broker is down");
+        Guid id = await harness.SeedAsync(Start);
+        using SpanRecorder spans = new SpanRecorder(id);
+
+        await harness.Relay.ProcessBatchAsync(Token);
+
+        Activity span = spans.Stopped.ShouldHaveSingleItem();
+        span.Status.ShouldBe(ActivityStatusCode.Error);
+        span.StatusDescription.ShouldBe("the broker is down");
     }
 
     [Fact]
@@ -210,5 +273,39 @@ public sealed class OutboxRelayTests
 
         IReadOnlyList<ClaimedMessage> claimed = await store.ClaimBatchAsync(10, TimeSpan.FromSeconds(30), 10, Token);
         claimed.ShouldHaveSingleItem();
+    }
+}
+
+/// <summary>
+/// Collects the finished spans of one outbox message. Spans of other messages, which tests running in parallel
+/// make, are ignored.
+/// </summary>
+internal sealed class SpanRecorder : IDisposable
+{
+    private readonly ActivityListener _listener;
+    private readonly ConcurrentQueue<Activity> _stopped = new ConcurrentQueue<Activity>();
+
+    public SpanRecorder(Guid messageId)
+    {
+        _listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == CartTelemetry.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> options) => ActivitySamplingResult.AllData,
+            ActivityStopped = activity =>
+            {
+                if (Equals(activity.GetTagItem("messaging.message.id"), messageId))
+                {
+                    _stopped.Enqueue(activity);
+                }
+            },
+        };
+        ActivitySource.AddActivityListener(_listener);
+    }
+
+    public IReadOnlyCollection<Activity> Stopped => _stopped;
+
+    public void Dispose()
+    {
+        _listener.Dispose();
     }
 }

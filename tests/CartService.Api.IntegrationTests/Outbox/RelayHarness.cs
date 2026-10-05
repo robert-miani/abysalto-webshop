@@ -62,7 +62,7 @@ internal sealed class RelayHarness : IAsyncDisposable
         return Create(connectionString, options ?? new OutboxOptions());
     }
 
-    public async Task<Guid> SeedAsync(DateTimeOffset occurredAt, string orderingKey = "checkout-1")
+    public async Task<Guid> SeedAsync(DateTimeOffset occurredAt, string orderingKey = "checkout-1", string payload = "{\"specversion\":\"1.0\"}")
     {
         Guid id = Guid.NewGuid();
         await using CartDbContext context = PostgresFixture.CreateContext(ConnectionString);
@@ -71,7 +71,7 @@ internal sealed class RelayHarness : IAsyncDisposable
             Id = id,
             Type = "CartCheckedOut",
             OrderingKey = orderingKey,
-            Payload = "{\"specversion\":\"1.0\"}",
+            Payload = payload,
             OccurredAt = occurredAt,
         });
         await context.SaveChangesAsync(Token);

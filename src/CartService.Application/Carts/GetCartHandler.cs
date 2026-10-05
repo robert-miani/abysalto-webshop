@@ -21,6 +21,8 @@ public sealed class GetCartHandler
     {
         CachedCart? cached = await _cache.GetByIdAsync(cartId, cancellationToken);
 
+        CartTelemetry.CacheLookups.Add(1, CartTelemetry.Tag("result", cached is null ? "miss" : "hit"));
+
         if (cached is not null)
         {
             // A cache hit must not skip the ownership check, and it gives the same answer as the database does.

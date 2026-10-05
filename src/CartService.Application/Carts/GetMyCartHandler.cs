@@ -24,6 +24,8 @@ public sealed class GetMyCartHandler
     {
         CachedCart? cached = await _cache.GetActiveByCustomerAsync(customerId, cancellationToken);
 
+        CartTelemetry.CacheLookups.Add(1, CartTelemetry.Tag("result", cached is null ? "miss" : "hit"));
+
         if (cached is not null)
         {
             return cached.Cart;

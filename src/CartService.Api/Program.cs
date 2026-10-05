@@ -1,6 +1,7 @@
 namespace CartService.Api;
 
 using System.Threading.Tasks;
+using CartService.Api.Observability;
 using CartService.Application;
 using CartService.Infrastructure;
 using Microsoft.AspNetCore.Builder;
@@ -14,6 +15,8 @@ public sealed class Program
     public static async Task Main(string[] args)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
+        builder.AddCartObservability();
 
         builder.Services
             .AddApplication()

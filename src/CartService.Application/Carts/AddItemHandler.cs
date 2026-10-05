@@ -42,6 +42,7 @@ public sealed class AddItemHandler
         cart.AddItem(product.ProductId, product.Name, product.UnitPrice, quantity, _time.GetUtcNow());
         await _unitOfWork.SaveChangesAsync(cancellationToken);
         await _cache.RemoveAsync(cart, cancellationToken);
+        CartTelemetry.ItemsAdded.Add(quantity);
 
         return CartDto.From(cart);
     }
