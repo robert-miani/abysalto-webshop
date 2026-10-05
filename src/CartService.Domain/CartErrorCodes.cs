@@ -16,4 +16,8 @@ public static class CartErrorCodes
     public const string Empty = "cart.empty";
 
     public const string CheckoutRequiresCustomer = "cart.checkout_requires_customer";
+
+    public const string MergeRequiresCustomerCart = "cart.merge_requires_customer_cart";
+
+    public const string MergeSourceNotGuest = "cart.merge_source_not_guest";
 }

@@ -2,6 +2,7 @@ namespace CartService.Domain;
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -169,6 +170,74 @@ public sealed class Cart
         Touch(now);
 
         return CheckoutId.Value;
+    }
+
+    /// <summary>
+    /// Merges the items of a guest cart into this customer cart, for example when the guest signs in.
+    /// Quantities of the same product are added up, capped at the limit per product, and this cart keeps its own
+    /// name and price for such a line. Products that are only in the guest cart are added with the guest's price.
+    /// The guest cart is marked as merged. If the result would hold too many different products, the whole
+    /// merge is rejected and neither cart changes.
+    /// </summary>
+    public void MergeGuestCart(Cart guestCart, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(guestCart);
+
+        if (CustomerId is null)
+        {
+            throw new CartRuleViolationException(
+                CartErrorCodes.MergeRequiresCustomerCart,
+                "Items can only be merged into a customer cart.");
+        }
+
+        if (guestCart.CustomerId is not null)
+        {
+            throw new CartRuleViolationException(
+                CartErrorCodes.MergeSourceNotGuest,
+                "Only a guest cart can be merged into a customer cart.");
+        }
+
+        EnsureActive();
+        guestCart.EnsureActive();
+
+        int newProducts = guestCart._items.Count(item => Find(item.ProductId) is null);
+
+        if (_items.Count + newProducts > CartLimits.MaxDistinctItems)
+        {
+            throw new CartRuleViolationException(
+                CartErrorCodes.ItemLimitExceeded,
+                $"The merged cart would hold more than {CartLimits.MaxDistinctItems} different products.");
+        }
+
+        bool changed = false;
+
+        foreach (CartItem guestItem in guestCart._items)
+        {
+            CartItem? existing = Find(guestItem.ProductId);
+
+            if (existing is null)
+            {
+                _items.Add(new CartItem(guestItem.ProductId, guestItem.ProductName, guestItem.UnitPrice, guestItem.Quantity));
+                changed = true;
+                continue;
+            }
+
+            int quantity = Math.Min(existing.Quantity + guestItem.Quantity, CartLimits.MaxQuantityPerItem);
+
+            if (quantity != existing.Quantity)
+            {
+                existing.SetQuantity(quantity);
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            Touch(now);
+        }
+
+        guestCart.Status = CartStatus.Merged;
+        guestCart.Touch(now);
     }
 
     public bool IsOwnedByCustomer(Guid customerId)
