@@ -2,6 +2,7 @@ namespace CartService.Infrastructure;
 
 using System;
 using CartService.Application.Abstractions;
+using CartService.Infrastructure.Guests;
 using CartService.Infrastructure.Persistence;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,6 +24,8 @@ public static class Module
             DatabaseOptions database = serviceProvider.GetRequiredService<IOptions<DatabaseOptions>>().Value;
             options.UseCartDatabase(database.ConnectionString);
         });
+
+        services.AddSingleton<IGuestTokenService, GuestTokenService>();
 
         services.AddScoped<ICartRepository, CartRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
