@@ -56,7 +56,7 @@ internal sealed class FakeCartCache : ICartCache
         return Task.CompletedTask;
     }
 
-    public Task RemoveAsync(Cart cart, CancellationToken cancellationToken)
+    public Task RemoveAsync(Cart cart)
     {
         Removals++;
         _byId.Remove(cart.Id);

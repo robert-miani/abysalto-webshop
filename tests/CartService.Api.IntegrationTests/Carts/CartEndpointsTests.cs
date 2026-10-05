@@ -35,6 +35,47 @@ public sealed class CartEndpointsTests : IDisposable
         _api.Dispose();
     }
 
+    [Theory]
+    [InlineData("garbage")]
+    [InlineData("")]
+    public async Task ABearerTokenThatIsNotAJwtGetsNoGuestCart(string token)
+    {
+        using HttpClient client = _api.Anonymous();
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+
+        HttpResponseMessage response = await client.PostAsync("/v1/carts", content: null, Token);
+
+        await ShouldBeInvalidTokenAsync(response);
+    }
+
+    [Fact]
+    public async Task AnExpiredTokenGetsNoGuestCart()
+    {
+        using HttpClient client = _api.CustomerWithToken(TestTokens.ExpiredFor(Guid.NewGuid()));
+
+        await ShouldBeInvalidTokenAsync(await client.PostAsync("/v1/carts", content: null, Token));
+    }
+
+    [Fact]
+    public async Task ATokenForAnotherAudienceOrSignedWithAnotherKeyGetsNoGuestCart()
+    {
+        using HttpClient otherAudience = _api.CustomerWithToken(TestTokens.ForCustomer(Guid.NewGuid(), audience: "another-api"));
+        using HttpClient otherKey = _api.CustomerWithToken(TestTokens.ForCustomer(Guid.NewGuid(), signingKey: "another-signing-key-that-is-long-enough-01"));
+
+        await ShouldBeInvalidTokenAsync(await otherAudience.PostAsync("/v1/carts", content: null, Token));
+        await ShouldBeInvalidTokenAsync(await otherKey.PostAsync("/v1/carts", content: null, Token));
+    }
+
+    [Fact]
+    public async Task AValidTokenStillGetsTheCustomerCartAndNoTokenStillGetsAGuestCart()
+    {
+        using HttpClient customer = _api.Customer(Guid.NewGuid());
+        using HttpClient anonymous = _api.Anonymous();
+
+        (await customer.PostAsync("/v1/carts", content: null, Token)).StatusCode.ShouldBe(HttpStatusCode.Created);
+        (await anonymous.PostAsync("/v1/carts", content: null, Token)).StatusCode.ShouldBe(HttpStatusCode.Created);
+    }
+
     [Fact]
     public async Task AnAnonymousVisitorGetsAGuestCartAndItsTokenOnce()
     {
@@ -198,5 +239,14 @@ public sealed class CartEndpointsTests : IDisposable
         using HttpClient client = _api.Anonymous();
 
         return await ReadAsync<GuestCartCreatedResponse>(await client.PostAsync("/v1/carts", content: null, Token));
+    }
+
+    private static async Task ShouldBeInvalidTokenAsync(HttpResponseMessage response)
+    {
+        response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        response.Headers.WwwAuthenticate.ToString().ShouldContain("invalid_token");
+        response.Content.Headers.ContentType!.MediaType.ShouldBe("application/problem+json");
+        JsonElement problem = await response.Content.ReadFromJsonAsync<JsonElement>(Token);
+        problem.GetProperty("title").GetString().ShouldBe("The bearer token is not valid.");
     }
 }

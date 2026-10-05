@@ -32,7 +32,7 @@ public sealed class ChangeItemQuantityHandler
 
         cart.ChangeQuantity(productId, quantity, _time.GetUtcNow());
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-        await _cache.RemoveAsync(cart, cancellationToken);
+        await _cache.RemoveAsync(cart);
 
         return CartDto.From(cart);
     }

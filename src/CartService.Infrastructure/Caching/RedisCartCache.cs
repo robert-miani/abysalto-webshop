@@ -75,7 +75,7 @@ internal sealed class RedisCartCache : ICartCache
             cancellationToken);
     }
 
-    public async Task RemoveAsync(Cart cart, CancellationToken cancellationToken)
+    public async Task RemoveAsync(Cart cart)
     {
         await RunAsync(
             async token =>
@@ -88,7 +88,7 @@ internal sealed class RedisCartCache : ICartCache
                 }
             },
             "remove a cart",
-            cancellationToken);
+            CancellationToken.None);
     }
 
     /// <summary>

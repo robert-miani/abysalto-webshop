@@ -20,12 +20,24 @@ internal static class TestTokens
         string signingKey = CartApiFactory.SigningKey,
         string audience = Audience)
     {
+        return Create(customerId, signingKey, audience, DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow.AddHours(1));
+    }
+
+    /// <summary>A correctly signed token that expired an hour ago.</summary>
+    public static string ExpiredFor(Guid customerId)
+    {
+        return Create(customerId, CartApiFactory.SigningKey, Audience, DateTime.UtcNow.AddHours(-2), DateTime.UtcNow.AddHours(-1));
+    }
+
+    private static string Create(Guid customerId, string signingKey, string audience, DateTime notBefore, DateTime expires)
+    {
         SecurityTokenDescriptor descriptor = new SecurityTokenDescriptor
         {
             Issuer = Issuer,
             Audience = audience,
             Subject = new ClaimsIdentity(new[] { new Claim("oid", customerId.ToString()) }),
-            Expires = DateTime.UtcNow.AddHours(1),
+            NotBefore = notBefore,
+            Expires = expires,
             SigningCredentials = new SigningCredentials(
                 new SymmetricSecurityKey(Encoding.UTF8.GetBytes(signingKey)),
                 SecurityAlgorithms.HmacSha256),

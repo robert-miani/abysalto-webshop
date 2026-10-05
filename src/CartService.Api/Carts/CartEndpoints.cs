@@ -13,6 +13,7 @@ using CartService.Application.Carts;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Net.Http.Headers;
 
 internal static class CartEndpoints
 {
@@ -35,9 +36,12 @@ internal static class CartEndpoints
             .WithName("CreateCart")
             .WithSummary("Creates a cart. A customer gets their active cart; without a token a guest cart is created.")
             .WithDescription("A signed-in customer gets their one active cart: 201 with the cart when it was created, 200 when it already existed. "
-                + "Without a token, a guest cart is created and 201 returns the cart together with its secret guestToken, which is shown only once.")
+                + "Without a token, a guest cart is created and 201 returns the cart together with its secret guestToken, which is shown only once. "
+                + "A bearer token that is sent but not valid (expired, wrong audience, bad signature) answers 401 and creates nothing, so a "
+                + "signed-in customer whose token expired is never given an unrelated guest cart by mistake.")
             .Produces<GuestCartCreatedResponse>(StatusCodes.Status201Created)
             .Produces<CartDto>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status401Unauthorized)
             .RequireRateLimiting(RateLimitingRegistration.StrictPolicy)
             .AllowAnonymous();
 
@@ -139,6 +143,18 @@ internal static class CartEndpoints
         CreateCartHandler handler,
         CancellationToken cancellationToken)
     {
+        if (httpContext.Request.Headers.ContainsKey(HeaderNames.Authorization) && httpContext.User.Identity?.IsAuthenticated != true)
+        {
+            // The client says it is somebody, and the proof is bad. Answering as if it were a visitor would give a
+            // customer with an expired token a guest cart that has nothing to do with their own.
+            httpContext.Response.Headers[HeaderNames.WWWAuthenticate] = "Bearer error=\"invalid_token\"";
+
+            return Results.Problem(
+                statusCode: StatusCodes.Status401Unauthorized,
+                title: "The bearer token is not valid.",
+                detail: "The token is expired, was not issued for this API, or has a bad signature. Sign in again, or leave out the Authorization header to create a guest cart.");
+        }
+
         Guid? customerId = requesters.Resolve(httpContext)?.CustomerId;
 
         CreateCartResult result = await handler.HandleAsync(customerId, cancellationToken);

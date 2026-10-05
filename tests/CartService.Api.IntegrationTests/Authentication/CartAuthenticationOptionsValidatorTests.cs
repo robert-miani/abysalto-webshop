@@ -32,6 +32,51 @@ public sealed class CartAuthenticationOptionsValidatorTests
         result.FailureMessage.ShouldContain("DevelopmentSigningKey");
     }
 
+    [Theory]
+    [InlineData("Staging")]
+    [InlineData("UAT")]
+    [InlineData("production")]
+    [InlineData("SomethingNobodyThoughtOf")]
+    public void EveryEnvironmentThatIsNotLocalRefusesADevelopmentSigningKey(string environment)
+    {
+        ValidateOptionsResult result = Validate(
+            environment,
+            new CartAuthenticationOptions { Audience = "api", Authority = "https://login.example.com/tenant", DevelopmentSigningKey = LongKey });
+
+        result.Failed.ShouldBeTrue();
+        result.FailureMessage.ShouldContain("DevelopmentSigningKey");
+        result.FailureMessage.ShouldContain(environment);
+    }
+
+    [Theory]
+    [InlineData("Staging")]
+    [InlineData("UAT")]
+    public void EveryEnvironmentThatIsNotLocalNeedsAnAuthority(string environment)
+    {
+        ValidateOptionsResult result = Validate(environment, new CartAuthenticationOptions { Audience = "api", DevelopmentSigningKey = LongKey });
+
+        result.Failed.ShouldBeTrue();
+        result.FailureMessage.ShouldContain("Authority");
+    }
+
+    [Fact]
+    public void StagingWithAnAuthorityIsValid()
+    {
+        ValidateOptionsResult result = Validate(
+            "Staging",
+            new CartAuthenticationOptions { Audience = "api", Authority = "https://login.example.com/tenant" });
+
+        result.Succeeded.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void TheTestEnvironmentMayUseADevelopmentSigningKey()
+    {
+        ValidateOptionsResult result = Validate("Testing", new CartAuthenticationOptions { Audience = "api", DevelopmentSigningKey = LongKey });
+
+        result.Succeeded.ShouldBeTrue();
+    }
+
     [Fact]
     public void ProductionWithAnAuthorityIsValid()
     {

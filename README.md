@@ -125,10 +125,17 @@ The sample products are `tee-blue-m`, `tee-blue-l`, `hoodie-grey-m`, `cap-red`, 
 A visitor can shop without an account. When they sign in, the items of the guest cart move into their customer cart:
 
 ```bash
-GUEST=$(curl -s -X POST http://localhost:8080/v1/carts)          # contains "guestToken" and the cart
-# ... add products to the guest cart with the X-Cart-Token header, then sign in and merge:
+GUEST=$(curl -s -X POST http://localhost:8080/v1/carts)          # the answer holds the cart and its "guestToken"
+GUEST_TOKEN=$(echo "$GUEST" | sed -E 's/.*"guestToken":"([^"]+)".*/\1/')
+GUEST_CART=$(echo "$GUEST" | sed -E 's/.*"cart":\{"id":"([^"]+)".*/\1/')
+
+# add a product to the guest cart; the guest proves access with the X-Cart-Token header
+curl -s -X POST http://localhost:8080/v1/carts/$GUEST_CART/items -H "X-Cart-Token: $GUEST_TOKEN" \
+  -H "Content-Type: application/json" -d '{"productId":"mug-white","quantity":1}'
+
+# sign in (the $TOKEN of "Try the API" above) and merge the guest cart into the customer cart
 curl -s -X POST http://localhost:8080/v1/carts/me/merge \
-  -H "Authorization: Bearer $TOKEN" -H "X-Cart-Token: <guestToken>"
+  -H "Authorization: Bearer $TOKEN" -H "X-Cart-Token: $GUEST_TOKEN"
 ```
 
 | Rule | Behavior |
@@ -228,7 +235,10 @@ A request over the limit answers 429 with problem details (`code` `rate_limit.ex
 header in seconds. Health checks are not limited. The numbers are in the `RateLimiting` section of
 `appsettings.json`; `RateLimiting:Enabled` switches the limits off, which the integration tests do. Behind a
 reverse proxy or ingress, set `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` so the limit sees the address of the
-client and not the address of the proxy. The edge of the platform (Front Door and API Management) is still the
+client and not the address of the proxy. Without it every visitor shares the one bucket of the proxy. With it the
+service trusts the `X-Forwarded-For` header of any caller, so it is only safe when the pods can be reached only
+through the ingress (a network policy does that); otherwise a caller can invent an address for every request. An IPv6
+client is limited per address, not per network. The edge of the platform (Front Door and API Management) is still the
 place that stops floods; this limit protects the service itself.
 
 ### Caching with Redis
@@ -240,7 +250,7 @@ only read into it.
 | Topic | Decision |
 | --- | --- |
 | Pattern | Cache-aside. A miss reads PostgreSQL and stores the cart for 60 seconds (`Cache:EntryLifetime`) |
-| Writes | Every change reads the cart from PostgreSQL, saves it, and then removes the cached cart (the merge removes both carts, checkout also the customer's active cart). The next read loads the new state. A change that fails to save leaves the cache alone |
+| Writes | Every change reads the cart from PostgreSQL, saves it, and then removes the cached cart (the merge removes both carts, checkout also the customer's active cart). The next read loads the new state, except in the race described below. A change that fails to save leaves the cache alone. The removal does not use the token of the request, so a client that disconnects right after the save cannot leave a stale copy behind |
 | Privacy | The owner is stored with the cart and checked on every cache hit, so a hit gives the same 404 as the database does. Only the hash of a guest token is stored |
 | Keys | `cart:v1:id:<id>` and `cart:v1:customer:<customer id>` (the active cart only). The version in the key means a release that changes the entry never reads entries of the old release |
 | Redis is slow or down | Every call has a timeout of 300 ms (`Cache:Timeout`) and a circuit breaker: after repeated failures the cache is skipped for 15 seconds (`Cache:BreakDuration`). A failure is the same as a miss, so no request fails or waits because of Redis. The service starts without Redis |
@@ -252,15 +262,15 @@ removed. If the same Redis comes back with its old data, a client can read the o
 cart version rejects a stale write. A shorter lifetime narrows the window; a cart is small, so the price of a
 shorter one is only more reads from PostgreSQL.
 
-In production Redis is Azure Cache for Redis. Its connection string comes from Key Vault like the other secrets.
+In production Redis is Azure Managed Redis, as in the architecture document. Its connection string comes from Key Vault like the other secrets.
 
 ### Health checks
 
 `/health/live` only says that the process answers. A dependency that is down must never restart the service,
 because a restart does not bring the dependency back.
 
-`/health/ready` decides whether the service gets traffic and lists every check by name and status, never an
-exception or an address:
+`/health/ready` decides whether the service gets traffic. It lists every check with its name, its status and a short
+fixed description, and never an exception, an address or a connection string:
 
 | Check | If it fails | Why |
 | --- | --- | --- |
@@ -321,7 +331,9 @@ what it deleted in `cartservice.cleanup.deleted`.
 | Customer | A bearer token. The customer id is the `oid` claim, not `sub`, because Entra External ID gives one customer a different `sub` in every app. Production trusts the identity provider in `Authentication:Authority`; Development and tests use a local signing key |
 | Guest | The `X-Cart-Token` header. The token is 256 random bits, shown once; only its SHA-256 hash is stored |
 
-The service refuses to start in production without an authority, and refuses a development signing key there.
+Only the Development environment (and Testing, for the automated tests) may use a development signing key. Every other
+environment, whatever its name (Staging, UAT, Production), refuses to start without an authority and refuses to start
+with a development signing key, so a new environment name can never switch the protection off.
 In production the service also reaches Service Bus with its workload identity (`ServiceBus:FullyQualifiedNamespace`),
 so no connection string or secret is needed.
 
@@ -333,11 +345,12 @@ cart. Errors are RFC 7807 problem details with a stable `code`:
 | Status | When | `code` |
 | --- | --- | --- |
 | 400 | Invalid input, for example a quantity outside 1 to 20 | Validation errors per field |
-| 401 | No valid bearer token or cart token | |
+| 401 | No valid bearer token or cart token. Creating a cart with a bearer token that is expired or not valid also answers 401 and creates nothing, so nobody gets an unrelated guest cart by mistake | |
 | 404 | The cart does not exist or belongs to somebody else | `cart.not_found` |
 | 409 | Two requests changed the same cart at once; read it again and retry | `cart.concurrency_conflict` |
+| 409 | Another request created the active cart of the same customer at the same moment, which can happen during a merge; ask again | `cart.active_cart_exists` |
 | 409 | A request with the same `Idempotency-Key` is still running; wait for `Retry-After` | `idempotency.request_in_progress` |
-| 422 | A business rule is broken | `cart.product_not_found`, `cart.quantity_out_of_range`, `cart.item_limit_exceeded`, `cart.item_not_found`, `cart.not_active`, `cart.empty`, `cart.checkout_requires_customer` |
+| 422 | A business rule is broken | `cart.product_not_found`, `cart.quantity_out_of_range`, `cart.item_limit_exceeded`, `cart.item_not_found`, `cart.not_active`, `cart.empty`, `cart.checkout_requires_customer`, `cart.merge_requires_customer_cart`, `cart.merge_source_not_guest` |
 | 422 | An `Idempotency-Key` was already used for a different request | `idempotency.key_reused` |
 | 429 | Too many requests; wait for `Retry-After` | `rate_limit.exceeded` |
 
@@ -359,6 +372,9 @@ unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set (to send it to the dashboard, publis
 dotnet build CartService.slnx
 dotnet test --solution CartService.slnx
 ```
+
+The test projects use xUnit v3 on Microsoft.Testing.Platform, which `global.json` switches on; that is why the command
+takes `--solution` and not a path to a project.
 
 The integration tests need Docker. They start PostgreSQL, Redis and the Service Bus emulator, apply the real
 migrations, run the API in memory against them, and remove the containers when the tests finish. They include a
@@ -398,6 +414,17 @@ dotnet dotnet-ef migrations add <Name> --project src/CartService.Infrastructure 
 | `tests/CartService.Architecture.Tests` | Enforces the allowed dependencies between layers |
 | `tests/CartService.Api.IntegrationTests` | The API over HTTP against real containers: PostgreSQL, Redis and the Service Bus emulator |
 
+### Known limits
+
+These limits are real, and each is a trade-off that was chosen. None loses data.
+
+| Limit | What can happen | Why it is accepted, and what closes it |
+| --- | --- | --- |
+| A read that overlaps a write | A read loads a cart from PostgreSQL, a change commits and removes the cache entry, and then the read stores its older copy. A client can see the old cart for at most `Cache:EntryLifetime` (60 seconds), for example a cart that still looks active after its checkout. Writes are not affected: they start from PostgreSQL, and the cart version or the cart status rejects them | The window is a few milliseconds wide and bounded by the lifetime. Storing the cart version in the entry and writing it only when it is newer closes it, at the price of a conditional write to Redis |
+| The idempotency record and the cart change are two writes | If the service dies between them, or the response cannot be stored, the record frees itself after the 30-second lease and a retry with the same key adds the product again. A request that runs longer than the lease has the same effect | A cart is visible to the customer, who can correct it. Writing both in one transaction closes the gap and couples the cart to the idempotency table |
+| The outbox relay holds a database connection during a batch | A message waits for its turn behind the messages before it. If a batch is slow, the 30-second lease of a later message can end and another relay instance can publish it again | Delivery is at least once by design. The CloudEvent `id` is the Service Bus message id and the Order service skips ids it has seen. A smaller `Outbox:BatchSize` shortens the batch |
+| `/health/ready` is public | Anyone can read the status of the checks and their fixed descriptions, for example that events wait too long | It contains no address, no exception and no data of customers. The platform can restrict the route at the ingress |
+
 ### What was left out, and why
 
 This is a reference implementation of one service, not the platform. These are known gaps, each on purpose:
@@ -408,7 +435,7 @@ This is a reference implementation of one service, not the platform. These are k
 | A real Catalog and Pricing service | `IProductCatalog` is the port; a configured list of eight products stands in. Prices are copied into the cart at the moment of adding |
 | A real Entra External ID tenant | The service validates tokens against `Authentication:Authority` in production. Development uses `POST /dev/token` and a local signing key, which production refuses |
 | Kubernetes manifests, Argo CD, Azure resources | They belong to the platform repositories of the delivery plan, not to one service |
-| Redis authentication and TLS | Local Redis is open on purpose. Azure Cache for Redis is configured through the connection string from Key Vault |
+| Redis authentication and TLS | Local Redis is open on purpose. Azure Managed Redis is configured through the connection string from Key Vault |
 | Other currencies | The launch market is the euro area, and `Money` is EUR only |
 | Stock reservation and availability | The Inventory service owns it. The cart does not promise stock |
 | Load testing at scale | The tests prove the behavior (parallel requests, a Redis outage, a broker outage); capacity needs a real environment |
