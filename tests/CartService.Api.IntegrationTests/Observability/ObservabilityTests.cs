@@ -26,8 +26,8 @@ using Xunit;
 [Trait("Category", "Integration")]
 public sealed class ObservabilityTests : IDisposable
 {
-    private readonly List<Activity> _spans = new List<Activity>();
-    private readonly List<Metric> _metrics = new List<Metric>();
+    private readonly LockedCollection<Activity> _spans = new LockedCollection<Activity>();
+    private readonly LockedCollection<Metric> _metrics = new LockedCollection<Metric>();
     private readonly PostgresFixture _postgres;
     private readonly TestApi _api;
 
@@ -51,7 +51,7 @@ public sealed class ObservabilityTests : IDisposable
 
         await client.PostAsync("/v1/carts", content: null, Token);
 
-        Activity server = SpansOf("Microsoft.AspNetCore").Single(span => span.DisplayName.StartsWith("POST /v1/carts", StringComparison.Ordinal));
+        Activity server = await WaitForServerSpanAsync(span => span.DisplayName.StartsWith("POST /v1/carts", StringComparison.Ordinal));
         server.Kind.ShouldBe(ActivityKind.Server);
         server.GetTagItem("http.response.status_code").ShouldBe(201);
         // The span is named after the route template, never after the path with ids in it.
@@ -68,7 +68,7 @@ public sealed class ObservabilityTests : IDisposable
 
         await client.SendAsync(request, Token);
 
-        Activity server = SpansOf("Microsoft.AspNetCore").Single(span => span.TraceId.ToString() == "0af7651916cd43dd8448eb211c80319c");
+        Activity server = await WaitForServerSpanAsync(span => span.TraceId.ToString() == "0af7651916cd43dd8448eb211c80319c");
         server.ParentSpanId.ToString().ShouldBe("b7ad6b7169203331");
     }
 
@@ -79,6 +79,11 @@ public sealed class ObservabilityTests : IDisposable
 
         await client.GetAsync("/health/live", Token);
         await client.GetAsync("/health/ready", Token);
+
+        // A request after the probes proves that spans of earlier requests have been exported by now.
+        using HttpClient customer = _api.Customer(Guid.NewGuid());
+        await customer.GetAsync("/v1/carts/me", Token);
+        await WaitForServerSpanAsync(span => span.DisplayName.StartsWith("GET /v1/carts/me", StringComparison.Ordinal));
 
         SpansOf("Microsoft.AspNetCore").ShouldNotContain(span => span.DisplayName.Contains("health", StringComparison.OrdinalIgnoreCase));
     }
@@ -98,6 +103,7 @@ public sealed class ObservabilityTests : IDisposable
         using HttpRequestMessage merge = new HttpRequestMessage(HttpMethod.Post, "/v1/carts/me/merge");
         merge.Headers.Add("X-Cart-Token", created.GuestToken);
         await customer.SendAsync(merge, Token);
+        await WaitForServerSpanAsync(span => span.DisplayName.EndsWith("/me/merge", StringComparison.Ordinal));
 
         string[] values = _spans
             .SelectMany(span => span.TagObjects.Select(tag => tag.Value?.ToString() ?? string.Empty).Concat(span.Events.SelectMany(spanEvent => spanEvent.Tags.Select(tag => tag.Value?.ToString() ?? string.Empty))))
@@ -118,7 +124,7 @@ public sealed class ObservabilityTests : IDisposable
 
         await client.PostAsync($"/v1/carts/{cart.Id}/checkout", content: null, Token);
 
-        Activity server = SpansOf("Microsoft.AspNetCore").Single(span => span.DisplayName.EndsWith("/checkout", StringComparison.Ordinal));
+        Activity server = await WaitForServerSpanAsync(span => span.DisplayName.EndsWith("/checkout", StringComparison.Ordinal));
         string payload = await ReadEventPayloadAsync(cart.Id);
         JsonElement envelope = JsonSerializer.Deserialize<JsonElement>(payload);
         ActivityContext.TryParse(envelope.GetProperty("traceparent").GetString(), null, out ActivityContext carried).ShouldBeTrue();
@@ -133,7 +139,13 @@ public sealed class ObservabilityTests : IDisposable
         await client.PostAsJsonAsync($"/v1/carts/{cart.Id}/items", new { productId = "cap-red", quantity = 2 }, Token);
         await client.GetAsync($"/v1/carts/{cart.Id}", Token);
 
-        _api.Services.GetRequiredService<MeterProvider>().ForceFlush().ShouldBeTrue();
+        // The request metrics are recorded when the request ends, which can be after the client has its answer.
+        await EventuallyAsync(() =>
+        {
+            _api.Services.GetRequiredService<MeterProvider>().ForceFlush();
+
+            return _metrics.Any(metric => metric.Name == "http.server.request.duration");
+        });
 
         string[] names = _metrics.Select(metric => metric.Name).Distinct().ToArray();
         names.ShouldContain("cartservice.carts.created");
@@ -166,6 +178,36 @@ public sealed class ObservabilityTests : IDisposable
     private Activity[] SpansOf(string sourceName)
     {
         return _spans.Where(span => span.Source.Name == sourceName).ToArray();
+    }
+
+    // The span of a request ends after the response is written, so the client can have its answer before the span
+    // is exported.
+    private async Task<Activity> WaitForServerSpanAsync(Func<Activity, bool> predicate)
+    {
+        Activity? found = null;
+        await EventuallyAsync(() =>
+        {
+            found = SpansOf("Microsoft.AspNetCore").FirstOrDefault(predicate);
+
+            return found is not null;
+        });
+
+        return found!;
+    }
+
+    private static async Task EventuallyAsync(Func<bool> condition)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException("The telemetry did not arrive in time.");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(50), Token);
+        }
     }
 
     private sealed class GuestBody
