@@ -6,6 +6,7 @@ using CartService.Api.Authentication;
 using CartService.Api.Carts;
 using CartService.Api.ErrorHandling;
 using CartService.Api.Health;
+using CartService.Api.OpenApi;
 using CartService.Api.Requesters;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http.Json;
@@ -25,6 +26,7 @@ internal static class Module
         services.AddHealthChecks();
         services.AddCartAuthentication();
         services.AddSingleton<RequesterResolver>();
+        services.AddCartOpenApi();
 
         // The cart status is sent as text ("Active"), not as a number.
         services.Configure<JsonOptions>(options => options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -45,6 +47,7 @@ internal static class Module
         if (app.Environment.IsDevelopment())
         {
             app.MapDevelopmentTokenEndpoint();
+            app.MapCartOpenApi();
         }
 
         return app;
