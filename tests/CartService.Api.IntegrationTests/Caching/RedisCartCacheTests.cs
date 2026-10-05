@@ -111,7 +111,7 @@ public sealed class RedisCartCacheTests : IDisposable
         Cart cart = CustomerCartWithItems();
         await _cache.SetAsync(cart, CartDto.From(cart), Token);
 
-        await _cache.RemoveAsync(cart, Token);
+        await _cache.RemoveAsync(cart);
 
         (await _cache.GetByIdAsync(cart.Id, Token)).ShouldBeNull();
         (await _cache.GetActiveByCustomerAsync(cart.CustomerId!.Value, Token)).ShouldBeNull();
@@ -167,7 +167,7 @@ public sealed class RedisCartCacheTests : IDisposable
         await Should.NotThrowAsync(async () =>
         {
             await cache.SetAsync(cart, CartDto.From(cart), Token);
-            await cache.RemoveAsync(cart, Token);
+            await cache.RemoveAsync(cart);
         });
         (await cache.GetByIdAsync(cart.Id, Token)).ShouldBeNull();
         (await cache.GetActiveByCustomerAsync(cart.CustomerId!.Value, Token)).ShouldBeNull();

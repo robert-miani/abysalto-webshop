@@ -26,7 +26,9 @@ public interface ICartCache
 
     /// <summary>
     /// Forgets everything cached about a cart. Every change of a cart calls this after it was saved, so the next
-    /// read loads the new state.
+    /// read loads the new state. It takes no cancellation token on purpose: the change is already committed, so a
+    /// client that disconnects at this moment must not leave a stale copy behind or turn a change that happened
+    /// into an error. The call is bounded by the timeout of the cache itself.
     /// </summary>
-    Task RemoveAsync(Cart cart, CancellationToken cancellationToken);
+    Task RemoveAsync(Cart cart);
 }

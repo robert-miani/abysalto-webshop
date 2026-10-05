@@ -28,7 +28,7 @@ internal sealed class NullCartCache : ICartCache
         return Task.CompletedTask;
     }
 
-    public Task RemoveAsync(Cart cart, CancellationToken cancellationToken)
+    public Task RemoveAsync(Cart cart)
     {
         return Task.CompletedTask;
     }

@@ -24,6 +24,9 @@ internal sealed class FakeUnitOfWork : IUnitOfWork
     /// <summary>Simulates what another request did in the meantime.</summary>
     public Action? BeforeFailure { get; set; }
 
+    /// <summary>Runs after a save has succeeded, for example to simulate a client that disconnects right then.</summary>
+    public Action? AfterSave { get; set; }
+
     public Task SaveChangesAsync(CancellationToken cancellationToken)
     {
         if (FailWith is not null)
@@ -40,6 +43,7 @@ internal sealed class FakeUnitOfWork : IUnitOfWork
         _repository.Commit();
         _outbox.Commit();
         SaveCount++;
+        AfterSave?.Invoke();
 
         return Task.CompletedTask;
     }

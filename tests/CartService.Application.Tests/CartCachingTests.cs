@@ -192,6 +192,38 @@ public sealed class CartCachingTests
         _environment.Cache.Removals.ShouldBe(0);
     }
 
+    [Fact]
+    public async Task AClientThatDisconnectsRightAfterTheSaveStillGetsTheCachedCartRemoved()
+    {
+        Cart cart = SeedCustomerCart();
+        await GetCart().HandleAsync(cart.Id, Customer, Token);
+        using CancellationTokenSource disconnect = new CancellationTokenSource();
+        _environment.UnitOfWork.AfterSave = disconnect.Cancel;
+
+        CartDto result = await new AddItemHandler(_environment.Carts, _environment.UnitOfWork, _environment.Catalog, _environment.Time, _environment.Cache)
+            .HandleAsync(cart.Id, Customer, "cap", 1, disconnect.Token);
+
+        // The change is committed, so the handler finishes it: no stale copy stays behind and no error is raised
+        // for a change that happened.
+        result.Items.ShouldHaveSingleItem();
+        _environment.Cache.Contains(cart.Id).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task EveryKindOfChangeFinishesItsCacheRemovalWhenTheClientDisconnectsAfterTheSave()
+    {
+        Cart cart = SeedCustomerCart("cap");
+        using CancellationTokenSource disconnect = new CancellationTokenSource();
+        _environment.UnitOfWork.AfterSave = disconnect.Cancel;
+        await GetCart().HandleAsync(cart.Id, Customer, Token);
+
+        await new CheckoutHandler(_environment.Carts, _environment.UnitOfWork, _environment.Outbox, _environment.Time, _environment.Cache)
+            .HandleAsync(cart.Id, Customer, disconnect.Token);
+
+        _environment.Cache.Contains(cart.Id).ShouldBeFalse();
+        _environment.Cache.ContainsActiveCartOf(_customerId).ShouldBeFalse();
+    }
+
     private Cart SeedCustomerCart(params string[] productIds)
     {
         Cart cart = Cart.CreateForCustomer(_customerId, HandlerEnvironment.Start);
