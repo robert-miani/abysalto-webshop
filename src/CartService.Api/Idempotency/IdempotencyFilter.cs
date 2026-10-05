@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using CartService.Api.Requesters;
+using CartService.Application;
 using CartService.Application.Abstractions;
 using CartService.Application.Carts;
 using Microsoft.AspNetCore.Http;
@@ -68,6 +69,8 @@ internal sealed class IdempotencyFilter : IEndpointFilter
         string fingerprint = Fingerprint(httpContext, context.Arguments.OfType<IIdempotentRequest>().FirstOrDefault());
         IdempotencyClaim claim = await _store.BeginAsync(scope, key, fingerprint, httpContext.RequestAborted);
 
+        CartTelemetry.IdempotencyRequests.Add(1, CartTelemetry.Tag("outcome", OutcomeName(claim.Outcome)));
+
         switch (claim.Outcome)
         {
             case IdempotencyOutcome.Started:
@@ -92,6 +95,17 @@ internal sealed class IdempotencyFilter : IEndpointFilter
                     "Use a new key for a new request, or send the original request again.",
                     KeyReusedCode);
         }
+    }
+
+    private static string OutcomeName(IdempotencyOutcome outcome)
+    {
+        return outcome switch
+        {
+            IdempotencyOutcome.Started => "started",
+            IdempotencyOutcome.Completed => "replayed",
+            IdempotencyOutcome.InProgress => "in_progress",
+            _ => "key_reused",
+        };
     }
 
     private static bool IsValidKey(string key)

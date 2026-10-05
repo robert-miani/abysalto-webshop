@@ -2,8 +2,10 @@ namespace CartService.Infrastructure.Outbox;
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using CartService.Application;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -56,15 +58,28 @@ internal sealed class OutboxRelay : BackgroundService
 
         foreach (ClaimedMessage message in batch)
         {
+            using Activity? activity = CartTelemetry.ActivitySource.StartActivity($"{message.Type} publish", ActivityKind.Producer);
+            activity?.SetTag("messaging.system", "servicebus");
+            activity?.SetTag("messaging.message.id", message.Id);
+            activity?.SetTag("messaging.outbox.attempt", message.Attempt);
+            long started = Stopwatch.GetTimestamp();
+
             try
             {
                 await _publisher.PublishAsync(message, cancellationToken);
                 await store.MarkProcessedAsync(message.Id, cancellationToken);
+                CartTelemetry.OutboxPublished.Add(1, CartTelemetry.Tag("result", "success"));
                 _logger.LogInformation("Published {EventType} {MessageId} on attempt {Attempt}.", message.Type, message.Id, message.Attempt);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+                CartTelemetry.OutboxPublished.Add(1, CartTelemetry.Tag("result", "failure"));
                 await HandleFailureAsync(store, message, exception, options, cancellationToken);
+            }
+            finally
+            {
+                CartTelemetry.OutboxPublishDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
             }
         }
 
