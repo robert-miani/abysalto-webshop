@@ -83,9 +83,11 @@ docker compose logs api | grep Published
 docker compose exec postgres psql -U cart -d cartservice -c "SELECT type, attempts, processed_at FROM outbox_messages"
 ```
 
-Look at the cache and at readiness:
+Read a cart, then look at the cache and at readiness (a checkout removes the cart from the cache, so read it
+after the checkout, or before):
 
 ```bash
+curl -s http://localhost:8080/v1/carts/<cart id> -H "Authorization: Bearer $TOKEN"
 docker compose exec redis redis-cli --scan --pattern 'cart:*'
 curl -s http://localhost:8080/health/ready
 ```
