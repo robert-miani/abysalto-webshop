@@ -1,4 +1,4 @@
-# Local environment: the Cart API with PostgreSQL and the Azure Service Bus emulator.
+# Local environment: the Cart API with PostgreSQL, Redis and the Azure Service Bus emulator.
 # The passwords below are for local containers only. Real environments get secrets from Azure Key Vault.
 name: cartservice
 
@@ -15,6 +15,19 @@ services:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cart -d cartservice"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # The cache. Nothing is stored on disk, so Redis starts empty. The API works without it: stop it with
+  # "docker compose stop redis" and the API reads every cart from PostgreSQL.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -53,6 +66,9 @@ services:
         condition: service_healthy
       servicebus-emulator:
         condition: service_started
+      # Started first, but the API does not wait for it to be healthy: the cache is optional.
+      redis:
+        condition: service_started
     environment:
       # Development enables the token endpoint and the local signing key. Production refuses both and needs
       # Authentication__Authority (Microsoft Entra External ID) and ServiceBus__FullyQualifiedNamespace instead.
@@ -60,6 +76,7 @@ services:
       # "GSS Encryption Mode=Disable" stops Npgsql from probing for Kerberos, which the slim runtime image lacks.
       Database__ConnectionString: "Host=postgres;Database=cartservice;Username=cart;Password=cart-local-only;GSS Encryption Mode=Disable"
       Database__ApplyMigrationsOnStartup: "true"
+      Cache__ConnectionString: "redis:6379"
       ServiceBus__ConnectionString: "Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;"
     ports:
       - "8080:8080"
