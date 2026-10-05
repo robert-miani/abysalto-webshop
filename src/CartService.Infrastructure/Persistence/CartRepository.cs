@@ -28,6 +28,11 @@ internal sealed class CartRepository : ICartRepository
             cancellationToken);
     }
 
+    public async Task<Cart?> GetByGuestTokenHashAsync(string guestTokenHash, CancellationToken cancellationToken)
+    {
+        return await _context.Carts.FirstOrDefaultAsync(cart => cart.GuestTokenHash == guestTokenHash, cancellationToken);
+    }
+
     public void Add(Cart cart)
     {
         _context.Carts.Add(cart);

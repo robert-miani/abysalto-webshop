@@ -32,6 +32,12 @@ internal sealed class CartConfiguration : IEntityTypeConfiguration<Cart>
             .HasDatabaseName("ux_carts_active_customer")
             .HasFilter("customer_id IS NOT NULL AND status = 'Active'");
 
+        // A guest cart is found by the hash of its token, and no two carts can share a token.
+        builder.HasIndex(cart => cart.GuestTokenHash)
+            .IsUnique()
+            .HasDatabaseName("ux_carts_guest_token_hash")
+            .HasFilter("guest_token_hash IS NOT NULL");
+
         // The lines belong to the cart: they are loaded with it and deleted with it.
         builder.HasMany(cart => cart.Items)
             .WithOne()

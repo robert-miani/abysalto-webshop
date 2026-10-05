@@ -88,10 +88,31 @@ The sample products are `tee-blue-m`, `tee-blue-l`, `hoodie-grey-m`, `cap-red`, 
 | `PUT /v1/carts/{cartId}/items/{productId}` | Owner | Sets the quantity |
 | `DELETE /v1/carts/{cartId}/items/{productId}` | Owner | 204, also when the product is not in the cart |
 | `POST /v1/carts/{cartId}/checkout` | Customer who owns the cart | 202 with the `checkoutId`; the cart becomes read-only and the `CartCheckedOut` event is published. Repeating it returns the same id |
+| `POST /v1/carts/me/merge` | Customer, plus the guest's `X-Cart-Token` | The customer's cart after the guest cart was merged into it |
 | `POST /dev/token` | Anyone, Development only | A token for a customer id |
 | `GET /health/live` | Anyone | Liveness |
 
-Merging a guest cart into a customer cart is the next step and is not implemented yet.
+### Guest carts and merging
+
+A visitor can shop without an account. When they sign in, the items of the guest cart move into their customer cart:
+
+```bash
+GUEST=$(curl -s -X POST http://localhost:8080/v1/carts)          # contains "guestToken" and the cart
+# ... add products to the guest cart with the X-Cart-Token header, then sign in and merge:
+curl -s -X POST http://localhost:8080/v1/carts/me/merge \
+  -H "Authorization: Bearer $TOKEN" -H "X-Cart-Token: <guestToken>"
+```
+
+| Rule | Behavior |
+| --- | --- |
+| Two proofs | The customer's bearer token says who receives the items; the guest token says which cart gives them away. Without the guest header the answer is 400, without a customer 401, with an unknown token 404 |
+| Same product in both carts | Quantities add up, at most 20; the customer's name and price win |
+| No active customer cart | A new one is created for the merge |
+| Too many products | More than 50 different products: 422, and neither cart changes |
+| After the merge | The guest cart is read-only (status `Merged`) |
+| Repeating the request | Changes nothing and returns the customer's cart, so a client that lost the answer can retry without doubling the quantities |
+| Merged already, then somebody else sends the token | The second customer's cart is returned unchanged: nothing is taken from a merged guest cart |
+| Parallel requests | One wins; the others get 409 or the same answer as a repeat. The items are never doubled |
 
 ### Checkout and the outbox
 

@@ -104,6 +104,40 @@ public sealed class CartPersistenceTests
     }
 
     [Fact]
+    public async Task AGuestCartIsFoundByTheHashOfItsToken()
+    {
+        string hash = $"hash-{Guid.NewGuid():N}";
+        Cart cart = Cart.CreateForGuest(hash, Now);
+        cart.AddItem("tee", "T-shirt", Money.Eur(10m), 1, Now);
+        await SaveNewAsync(cart);
+
+        await using CartDbContext context = _postgres.CreateContext();
+        CartRepository repository = new CartRepository(context);
+
+        Cart? found = await repository.GetByGuestTokenHashAsync(hash, Token);
+        Cart? unknown = await repository.GetByGuestTokenHashAsync("no-such-hash", Token);
+
+        found.ShouldNotBeNull();
+        found.Id.ShouldBe(cart.Id);
+        found.Items.ShouldHaveSingleItem();
+        unknown.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task TwoCartsCannotShareTheSameGuestToken()
+    {
+        string hash = $"hash-{Guid.NewGuid():N}";
+        await SaveNewAsync(Cart.CreateForGuest(hash, Now));
+
+        DbUpdateException error = await Should.ThrowAsync<DbUpdateException>(
+            () => SaveNewAsync(Cart.CreateForGuest(hash, Now)));
+
+        PostgresException postgresError = error.InnerException.ShouldBeOfType<PostgresException>();
+        postgresError.SqlState.ShouldBe(PostgresErrorCodes.UniqueViolation);
+        postgresError.ConstraintName.ShouldBe("ux_carts_guest_token_hash");
+    }
+
+    [Fact]
     public async Task TheActiveCartOfACustomerIsFoundByCustomerId()
     {
         Guid customerId = Guid.NewGuid();

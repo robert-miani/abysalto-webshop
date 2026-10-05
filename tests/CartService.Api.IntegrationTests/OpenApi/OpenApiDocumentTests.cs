@@ -57,6 +57,20 @@ public sealed class OpenApiDocumentTests
     }
 
     [Fact]
+    public async Task TheMergeNeedsTheBearerTokenAndTheGuestTokenTogetherInOneRequirement()
+    {
+        using TestApi api = new TestApi(_postgres, "Development");
+        using HttpClient client = api.Anonymous();
+
+        JsonElement paths = (await client.GetFromJsonAsync<JsonElement>("/openapi/v1.json", Token)).GetProperty("paths");
+
+        JsonElement security = paths.GetProperty("/v1/carts/me/merge").GetProperty("post").GetProperty("security");
+        JsonElement[] requirements = security.EnumerateArray().ToArray();
+        requirements.Length.ShouldBe(1);
+        requirements[0].EnumerateObject().Select(property => property.Name).Order().ToArray().ShouldBe(new[] { "Bearer", "CartToken" });
+    }
+
+    [Fact]
     public async Task EveryCartEndpointDeclaresItsProblemResponses()
     {
         using TestApi api = new TestApi(_postgres, "Development");
