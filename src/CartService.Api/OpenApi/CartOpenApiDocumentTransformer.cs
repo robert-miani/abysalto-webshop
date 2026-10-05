@@ -3,6 +3,7 @@ namespace CartService.Api.OpenApi;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using CartService.Api.Idempotency;
 using CartService.Api.Requesters;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
@@ -53,6 +54,7 @@ internal sealed class CartOpenApiDocumentTransformer : IOpenApiDocumentTransform
             foreach (KeyValuePair<System.Net.Http.HttpMethod, OpenApiOperation> operation in path.Value.Operations)
             {
                 AddSecurity(document, path.Key, operation.Key, operation.Value);
+                AddIdempotencyKeyHeader(path.Key, operation.Key, operation.Value);
             }
         }
 
@@ -91,6 +93,24 @@ internal sealed class CartOpenApiDocumentTransformer : IOpenApiDocumentTransform
             // Everything except "my cart" also accepts the token of a guest cart, as an alternative.
             operation.Security.Add(Requirement(document, CartTokenScheme));
         }
+    }
+
+    private static void AddIdempotencyKeyHeader(string path, System.Net.Http.HttpMethod method, OpenApiOperation operation)
+    {
+        if (method != System.Net.Http.HttpMethod.Post || path != "/v1/carts/{cartId}/items")
+        {
+            return;
+        }
+
+        operation.Parameters ??= new List<IOpenApiParameter>();
+        operation.Parameters.Add(new OpenApiParameter
+        {
+            Name = IdempotencyFilter.HeaderName,
+            In = ParameterLocation.Header,
+            Required = false,
+            Description = "Makes the request safe to repeat. Repeating it with the same key does not add the product again.",
+            Schema = new OpenApiSchema { Type = JsonSchemaType.String, MaxLength = 128 },
+        });
     }
 
     private static OpenApiSecurityRequirement Requirement(OpenApiDocument document, string scheme)
