@@ -86,6 +86,20 @@ internal static class CartEndpoints
                 StatusCodes.Status422UnprocessableEntity)
             .AddEndpointFilter<RequireRequesterFilter>();
 
+        carts.MapPost("/{cartId:guid}/checkout", Checkout)
+            .WithName("Checkout")
+            .WithSummary("Starts checkout of the cart.")
+            .WithDescription("Only a signed-in customer can check out, and the cart must not be empty. The cart becomes read-only and the "
+                + "Order service is told through a CartCheckedOut event, so the answer is 202 Accepted. Repeating the request answers "
+                + "202 with the same checkoutId and publishes nothing new.")
+            .Produces<CheckoutAcceptedResponse>(StatusCodes.Status202Accepted)
+            .ProducesProblems(
+                StatusCodes.Status401Unauthorized,
+                StatusCodes.Status404NotFound,
+                StatusCodes.Status409Conflict,
+                StatusCodes.Status422UnprocessableEntity)
+            .AddEndpointFilter<RequireRequesterFilter>();
+
         return endpoints;
     }
 
@@ -169,6 +183,18 @@ internal static class CartEndpoints
         await handler.HandleAsync(cartId, requester, productId, cancellationToken);
 
         return TypedResults.NoContent();
+    }
+
+    private static async Task<IResult> Checkout(
+        Guid cartId,
+        HttpContext httpContext,
+        CheckoutHandler handler,
+        CancellationToken cancellationToken)
+    {
+        Requester requester = RequireRequesterFilter.GetRequester(httpContext);
+        CheckoutResult result = await handler.HandleAsync(cartId, requester, cancellationToken);
+
+        return TypedResults.Accepted((string?)null, new CheckoutAcceptedResponse { CheckoutId = result.CheckoutId });
     }
 
     private static RouteHandlerBuilder ProducesProblems(this RouteHandlerBuilder builder, params int[] statusCodes)
